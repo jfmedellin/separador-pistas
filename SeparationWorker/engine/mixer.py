@@ -4,6 +4,17 @@ from dataclasses import dataclass
 from .pcm import AudioContractError, PlanarPCM, require_common_identity
 
 
+def gain_from_percent(percent):
+    """Map an attenuation control in the inclusive 0..100 range to gain."""
+    if isinstance(percent, bool) or not isinstance(percent, (int, float)) or not math.isfinite(percent) or not 0 <= percent <= 100:
+        raise AudioContractError(
+            "mixer.invalid_volume",
+            "Mixer volume must be a finite percentage between 0 and 100.",
+            "Set the stem volume to a value from 0% through 100% and retry.",
+        )
+    return float(percent) / 100.0
+
+
 @dataclass(frozen=True)
 class MixSetting:
     name: str
@@ -35,6 +46,17 @@ class MixerSnapshot:
         object.__setattr__(self, "settings", settings)
 
 
+def effective_gains(snapshot):
+    """Return the audible gain for every setting, honoring Mute and multi-Solo."""
+    solo_active = any(setting.solo for setting in snapshot.settings)
+    return {
+        setting.name: 0.0
+        if setting.muted or (solo_active and not setting.solo)
+        else float(setting.gain)
+        for setting in snapshot.settings
+    }
+
+
 def render_mix(stems, snapshot):
     names = {setting.name for setting in snapshot.settings}
     if names != set(stems):
@@ -52,16 +74,14 @@ def render_mix(stems, snapshot):
             "Load a validated published result before export.",
         )
     require_common_identity(reference, *(audio for _, audio in ordered[1:]))
-    solo_active = any(setting.solo for setting, _ in ordered)
+    gains = effective_gains(snapshot)
     channels = []
     for channel_index in range(reference.channel_count):
         output = []
         for frame in range(reference.frame_count):
             mixed64 = 0.0
             for setting, audio in ordered:
-                audible = not setting.muted and (not solo_active or setting.solo)
-                if audible:
-                    mixed64 += float(audio.planar[channel_index][frame]) * float(setting.gain)
+                mixed64 += float(audio.planar[channel_index][frame]) * gains[setting.name]
             output.append(mixed64)
         channels.append(tuple(output))
     return PlanarPCM(reference.sample_rate, tuple(channels))

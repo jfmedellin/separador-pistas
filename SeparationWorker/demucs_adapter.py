@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from SeparationWorker.engine.publication import publish_atomic
+from SeparationWorker.engine.stem_session import STEM_NAMES
 
 
 MODEL_NAME = "htdemucs"
-STEM_NAMES = ("vocals.wav", "drums.wav", "bass.wav", "other.wav")
 DIAGNOSTIC_MAX_LINES = 6
 DIAGNOSTIC_MAX_CHARACTERS = 800
 

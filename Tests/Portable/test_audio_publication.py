@@ -8,7 +8,13 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 
-from SeparationWorker.engine.mixer import MixSetting, MixerSnapshot, render_mix
+from SeparationWorker.engine.mixer import (
+    MixSetting,
+    MixerSnapshot,
+    effective_gains,
+    gain_from_percent,
+    render_mix,
+)
 from SeparationWorker.engine.fixture_harness import build_synthetic_oracle
 from SeparationWorker.engine.pcm import AudioContractError, PlanarPCM, compute_residual
 from SeparationWorker.engine.publication import (
@@ -92,6 +98,31 @@ class PCMContractTests(unittest.TestCase):
 
 
 class MixerAndWavTests(unittest.TestCase):
+    def test_effective_gains_apply_volume_mute_and_multiple_solo(self):
+        snapshot = MixerSnapshot(
+            (
+                MixSetting("Vocals", gain=0.25, solo=True),
+                MixSetting("Drums", gain=0.5, solo=True),
+                MixSetting("Bass", gain=1.0),
+                MixSetting("Other", gain=1.0, muted=True, solo=True),
+            )
+        )
+
+        self.assertEqual(
+            {"Vocals": 0.25, "Drums": 0.5, "Bass": 0.0, "Other": 0.0},
+            effective_gains(snapshot),
+        )
+
+    def test_volume_percent_maps_only_to_attenuation(self):
+        self.assertEqual(0.0, gain_from_percent(0))
+        self.assertEqual(0.5, gain_from_percent(50))
+        self.assertEqual(1.0, gain_from_percent(100))
+        for invalid in (-1, 101, math.nan, math.inf, "50"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(AudioContractError) as caught:
+                    gain_from_percent(invalid)
+                self.assertEqual("mixer.invalid_volume", caught.exception.code)
+
     def test_fixture_oracle_is_deterministic_rights_clear_and_uncalibrated(self):
         first = build_synthetic_oracle()
         second = build_synthetic_oracle()
