@@ -16,6 +16,8 @@ from SeparationWorker.engine.publication import publish_atomic
 
 MODEL_NAME = "htdemucs"
 STEM_NAMES = ("vocals.wav", "drums.wav", "bass.wav", "other.wav")
+DIAGNOSTIC_MAX_LINES = 6
+DIAGNOSTIC_MAX_CHARACTERS = 800
 
 
 @dataclass(eq=False)
@@ -59,7 +61,42 @@ def _require_demucs_41() -> None:
 
 def run_demucs(command: Sequence[str]) -> None:
     _require_demucs_41()
-    subprocess.run(list(command), check=True)
+    subprocess.run(
+        list(command),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def _diagnostic_tail(error: subprocess.CalledProcessError) -> str | None:
+    """Return a bounded tail from captured process output, if one exists."""
+    chunks = []
+    for value in (error.stdout, error.stderr):
+        if not value:
+            continue
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        if value not in chunks:
+            chunks.append(value)
+    lines = [line.strip() for line in "\n".join(chunks).replace("\r", "\n").splitlines() if line.strip()]
+    if not lines:
+        return None
+    tail = " | ".join(lines[-DIAGNOSTIC_MAX_LINES:])
+    if len(tail) > DIAGNOSTIC_MAX_CHARACTERS:
+        tail = "..." + tail[-(DIAGNOSTIC_MAX_CHARACTERS - 3) :]
+    return tail
+
+
+def _failure_cause(device: str, error: subprocess.CalledProcessError) -> str:
+    cause = f"{device} exited with code {error.returncode}"
+    diagnostic = _diagnostic_tail(error)
+    if diagnostic:
+        cause += f"; diagnostic tail: {diagnostic}"
+    return cause
 
 
 def _command(audio_file: Path, staging: Path, device: str) -> list[str]:
@@ -128,7 +165,7 @@ def separate_audio(
             if device != "cuda":
                 raise DemucsSeparationError(
                     "demucs.inference_failed",
-                    f"Demucs failed on CPU with exit code {cuda_error.returncode}.",
+                    f"Demucs failed: {_failure_cause('CPU', cuda_error)}.",
                     "Inspect Demucs diagnostics and retry the complete song.",
                 ) from cuda_error
             _reset_directory(staging)
@@ -137,7 +174,9 @@ def separate_audio(
             except subprocess.CalledProcessError as cpu_error:
                 raise DemucsSeparationError(
                     "demucs.inference_failed",
-                    f"Demucs failed on CUDA and CPU fallback exited with code {cpu_error.returncode}.",
+                    "Demucs failed on "
+                    f"{_failure_cause('CUDA', cuda_error)}; CPU fallback "
+                    f"{_failure_cause('CPU', cpu_error)}.",
                     "Inspect the CUDA and Demucs diagnostics before retrying.",
                 ) from cpu_error
 

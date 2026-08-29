@@ -9,6 +9,7 @@ from SeparationWorker.demucs_adapter import (
     MODEL_NAME,
     STEM_NAMES,
     DemucsSeparationError,
+    run_demucs,
     separate_audio,
 )
 
@@ -42,6 +43,22 @@ class DemucsAdapterTests(unittest.TestCase):
         audio_file = Path(root) / name
         audio_file.write_bytes(b"audio")
         return audio_file, Path(root) / "exports" / "song-stems"
+
+    def test_real_runner_captures_combined_process_diagnostics(self):
+        command = ["python", "-m", "demucs.separate"]
+        with patch("SeparationWorker.demucs_adapter._require_demucs_41"):
+            with patch("SeparationWorker.demucs_adapter.subprocess.run") as process_run:
+                run_demucs(command)
+
+        process_run.assert_called_once_with(
+            command,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
 
     def test_cuda_run_uses_htdemucs_and_atomically_publishes_exact_stems(self):
         with tempfile.TemporaryDirectory() as root:
@@ -111,6 +128,41 @@ class DemucsAdapterTests(unittest.TestCase):
 
             self.assertEqual("demucs.inference_failed", caught.exception.code)
             self.assertFalse(output.exists())
+
+    def test_cuda_and_cpu_failure_reports_bounded_diagnostic_tails(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            def failing_runner(command):
+                device = command[command.index("--device") + 1]
+                output_lines = [f"discarded-{index}" for index in range(20)]
+                output_lines.extend([f"{device}-detail-{index}" for index in range(6)])
+                raise subprocess.CalledProcessError(7, command, output="\n".join(output_lines))
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                separate_audio(audio_file, output, runner=failing_runner, cuda_probe=lambda: True)
+
+            cause = caught.exception.cause
+            self.assertIn("CUDA exited with code 7", cause)
+            self.assertIn("cuda-detail-0", cause)
+            self.assertIn("CPU fallback CPU exited with code 7", cause)
+            self.assertIn("cpu-detail-5", cause)
+            self.assertNotIn("discarded-19", cause)
+            self.assertLess(len(cause), 1800)
+
+    def test_cpu_failure_without_captured_output_keeps_fake_runners_compatible(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                separate_audio(
+                    audio_file,
+                    output,
+                    runner=FakeDemucs(fail_devices={"cpu"}),
+                    cuda_probe=lambda: False,
+                )
+
+            self.assertEqual("Demucs failed: CPU exited with code 7.", caught.exception.cause)
 
     def test_missing_input_fails_before_runner_or_output_creation(self):
         with tempfile.TemporaryDirectory() as root:
