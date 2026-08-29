@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from SeparationWorker.engine.mixer import MixSetting, MixerSnapshot
+from SeparationWorker.engine.stem_profile import LEGACY_PROFILE_ID, METAL_PROFILE_ID
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.mixer_controller import MixerState
 
@@ -40,8 +41,8 @@ class FakeSession:
         return (0.0, 0.5, 0.25)
 
 
-class LaneRenderingTests(unittest.TestCase):
-    """One real window is built for the whole class.
+class GuiAppFixture:
+    """Build one real window per test class, not per test.
 
     Building a window per test costs seconds each and loads the process
     enough to starve the wall-clock-bound playback suite that runs alongside
@@ -98,6 +99,8 @@ class LaneRenderingTests(unittest.TestCase):
         # The same call StemslayerApp makes when it first builds the strip.
         self.app._build_lanes(MixerViewModel().lane_rows)
 
+
+class LaneRenderingTests(GuiAppFixture, unittest.TestCase):
     def state_for(self, lane_names, absent=()):
         return MixerState(
             folder=Path("stems"),
@@ -179,6 +182,51 @@ class LaneRenderingTests(unittest.TestCase):
 
         percent = self.app._lane_widgets["rhythm_guitar.wav"]["percent"]
         self.assertEqual("50%", percent.cget("text"))
+
+
+class ProfileSelectorTests(GuiAppFixture, unittest.TestCase):
+    """The profile selector is the only way a user reaches the remediation."""
+
+    def setUp(self):
+        super().setUp()
+        self.app.controller.set_profile(LEGACY_PROFILE_ID)
+
+    def test_every_registered_profile_is_offered(self):
+        offered = set(self.app.profile_selector.cget("values"))
+
+        self.assertIn("Legacy", offered)
+        self.assertIn("Metal", offered)
+
+    def test_the_selector_starts_on_the_available_profile(self):
+        self.assertEqual("Legacy", self.app.profile_selector.get())
+        self.assertEqual(4, len(self.app._chip_lane_ids))
+
+    def test_selecting_metal_shows_the_remediation_and_blocks_starting(self):
+        self.app._profile_selected("Metal")
+
+        self.assertEqual(METAL_PROFILE_ID, self.app.controller.state.profile_id)
+        self.assertIn("admit_metal_guitar_model.py", self.app.status_detail.get())
+        self.assertEqual("disabled", str(self.app.action.cget("state")))
+
+    def test_selecting_metal_previews_its_six_channels(self):
+        self.app._profile_selected("Metal")
+
+        self.assertEqual(
+            ("vocals", "drums", "bass", "lead_guitar", "rhythm_guitar", "other"),
+            self.app._chip_lane_ids,
+        )
+
+    def test_switching_back_restores_the_legacy_preview(self):
+        self.app._profile_selected("Metal")
+        self.app._profile_selected("Legacy")
+
+        self.assertEqual(("vocals", "drums", "bass", "other"), self.app._chip_lane_ids)
+        self.assertEqual("Legacy", self.app.profile_selector.get())
+
+    def test_an_unknown_selection_is_ignored(self):
+        self.app._profile_selected("Nonexistent")
+
+        self.assertEqual(LEGACY_PROFILE_ID, self.app.controller.state.profile_id)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 from SeparationWorker.demucs_adapter import frozen_worker_path
 from SeparationWorker.engine import stem_cache
 from SeparationWorker.engine.mixer import MixerSnapshot
+from SeparationWorker.engine.stem_profile import LEGACY_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.gui_controller import GuiState, SeparationController
 from SeparationWorker.mixer_controller import MixerController, MixerState
@@ -41,12 +42,6 @@ COLORS = {
     "success": "#87A987",
 }
 
-STEMS = (
-    ("VOCALS", "#A292A3"),
-    ("DRUMS", "#B6927B"),
-    ("BASS", "#87A987"),
-    ("OTHER", "#8BA4B0"),
-)
 
 # Presentation for every lane a registered profile can publish. Unknown lanes
 # fall back to a readable label and the neutral colour rather than failing to
@@ -312,6 +307,9 @@ class StemslayerApp:
         self._lane_widgets: dict[str, dict[str, object]] = {}
         self._lanes_container: ctk.CTkFrame | None = None
         self._lane_rows: tuple[tuple[str, str, str, bool], ...] = ()
+        self._chips_frame: ctk.CTkFrame | None = None
+        self._chip_lane_ids: tuple[str, ...] = ()
+        self._profile_choices: dict[str, str] = {}
         self._mixer_model = MixerViewModel()
         self._syncing_controls = False
         self._cache_directories: list[Path] = []
@@ -459,21 +457,36 @@ class StemslayerApp:
             widget.bind("<Button-1>", lambda _event: self._pick_input())
         self._register_drop_zone(dropzone)
 
-        ctk.CTkLabel(center, text="CHANNELS TO EXTRACT", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
+        ctk.CTkLabel(center, text="PROFILE", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
             fill="x", pady=(24, 6)
         )
-        chips = ctk.CTkFrame(center, fg_color="transparent")
-        chips.pack(fill="x")
-        for index, (name, color) in enumerate(STEMS):
-            chips.grid_columnconfigure(index, weight=1)
-            chip = ctk.CTkFrame(chips, fg_color=COLORS["field"], corner_radius=999, border_width=1, border_color=COLORS["line"])
-            chip.grid(row=0, column=index, padx=(0 if index == 0 else 8, 0), sticky="ew")
-            inner = ctk.CTkFrame(chip, fg_color="transparent")
-            inner.pack(pady=10)
-            dot = tk.Canvas(inner, width=8, height=8, bg=COLORS["field"], highlightthickness=0)
-            dot.create_oval(0, 0, 8, 8, fill=color, outline="")
-            dot.pack(side="left", padx=(0, 6))
-            ctk.CTkLabel(inner, text=name, text_color=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(side="left")
+        # available_profiles() is static so the selector can be built before
+        # the controller exists; unavailable profiles are listed rather than
+        # hidden, and selecting one explains why it cannot run.
+        self._profile_choices = {
+            profile.display_name: profile.profile_id
+            for profile in SeparationController.available_profiles()
+        }
+        self.profile_selector = ctk.CTkSegmentedButton(
+            center,
+            values=list(self._profile_choices),
+            command=self._profile_selected,
+            fg_color=COLORS["field"],
+            selected_color=COLORS["accent"],
+            selected_hover_color=COLORS["accent"],
+            unselected_color=COLORS["field"],
+            unselected_hover_color=COLORS["line"],
+            text_color=COLORS["text"],
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.profile_selector.pack(fill="x")
+
+        ctk.CTkLabel(center, text="CHANNELS TO EXTRACT", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
+            fill="x", pady=(18, 6)
+        )
+        self._chips_frame = ctk.CTkFrame(center, fg_color="transparent")
+        self._chips_frame.pack(fill="x")
+        self._build_chips(LEGACY_PROFILE)
 
         self.status_banner = ctk.CTkFrame(center, fg_color=COLORS["surface"], corner_radius=10)
         self.status_banner.pack(fill="x", pady=(28, 0))
@@ -511,6 +524,40 @@ class StemslayerApp:
             height=40,
         )
         self.action.pack(side="right")
+
+    def _build_chips(self, profile) -> None:
+        """Render one chip per lane the selected profile publishes."""
+        for child in self._chips_frame.winfo_children():
+            child.destroy()
+        for index in range(len(self._chip_lane_ids)):
+            self._chips_frame.grid_columnconfigure(index, weight=0)
+        lanes = profile.lanes
+        font_size = 10 if len(lanes) <= 4 else 9
+        for index, lane in enumerate(lanes):
+            self._chips_frame.grid_columnconfigure(index, weight=1)
+            chip = ctk.CTkFrame(
+                self._chips_frame, fg_color=COLORS["field"], corner_radius=999, border_width=1, border_color=COLORS["line"]
+            )
+            chip.grid(row=0, column=index, padx=(0 if index == 0 else 6, 0), sticky="ew")
+            inner = ctk.CTkFrame(chip, fg_color="transparent")
+            inner.pack(pady=10)
+            dot = tk.Canvas(inner, width=8, height=8, bg=COLORS["field"], highlightthickness=0)
+            dot.create_oval(0, 0, 8, 8, fill=lane_color(lane.file_name), outline="")
+            dot.pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(
+                inner,
+                text=lane.display_name.upper(),
+                text_color=COLORS["text"],
+                font=("Segoe UI", font_size, "bold"),
+            ).pack(side="left")
+        self._chip_lane_ids = profile.lane_ids
+
+    def _profile_selected(self, display_name: str) -> None:
+        if self._syncing_controls:
+            return
+        profile_id = self._profile_choices.get(display_name)
+        if profile_id is not None:
+            self.controller.set_profile(profile_id)
 
     def _register_drop_zone(self, widget: tk.Widget) -> None:
         """Register the complete CTk widget tree so every visible drop-zone surface accepts files."""
@@ -898,11 +945,22 @@ class StemslayerApp:
         self._set_active_tab(view)
 
     def _render_state(self, state: GuiState) -> None:
+        profile = self.controller.profile
+        if profile.lane_ids != self._chip_lane_ids:
+            self._build_chips(profile)
+        if self.profile_selector.get() != profile.display_name:
+            self._syncing_controls = True
+            try:
+                self.profile_selector.set(profile.display_name)
+            finally:
+                self._syncing_controls = False
         self.input_value_label.configure(text=Path(state.input_file).name if state.input_file else "No file selected")
         self.status_headline.set(state.headline)
         self.status_detail.set(state.detail)
         if state.phase == "error":
             icon_kind, icon_color = "alert", COLORS["error"]
+        elif state.phase == "unavailable":
+            icon_kind, icon_color = "alert", COLORS["muted2"]
         elif state.phase == "success":
             icon_kind, icon_color = "check", COLORS["success"]
         else:
