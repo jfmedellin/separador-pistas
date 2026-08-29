@@ -42,3 +42,21 @@ The source CLI still accepts an explicit destination directory:
 In source development, the adapter runs `python -m demucs.separate`, selects CUDA when PyTorch reports an available GPU, and retries the complete separation once on CPU if the CUDA run fails. In the portable bundle, the adapter launches the sibling `StemslayerWorker.exe`; that worker contains the CPU-only PyTorch and runs `demucs.separate` without a Python installation. Publication is atomic, so an incomplete result directory is never exposed.
 
 The mixer does not currently include panning, mixed-WAV export, looping, waveform zoom, output-device selection, or persisted settings.
+
+## Guitar separation is not available
+
+The app lists a **Metal** profile with separate lead guitar and rhythm guitar lanes. **It cannot run, and this build does not separate lead from rhythm guitar.** Selecting it shows why instead of hiding the profile.
+
+No separation model exists that decomposes guitar into semantic lead and rhythm roles while also being redistributable and runnable offline on Windows. Every publicly reviewed candidate was rejected; the rejection matrix and the contract a future model must satisfy are recorded in `Compliance/evidence/metal-guitar/CONTRACT.md`.
+
+To check the current state yourself:
+
+```powershell
+.\.venv\Scripts\python.exe .\Tools\admit_metal_guitar_model.py --offline
+```
+
+It reports `DENIED` and exits with code 1. That is the correct result for this build, not a failure to fix. The four-stem Legacy profile is unaffected and remains the default.
+
+## What is verified
+
+Everything documented here is verified on Windows 10 and 11 only. No macOS behavior, commercial-use right, or multi-player capability is claimed or implied.

@@ -47,6 +47,29 @@ The source CLI accepts an explicit result directory and publishes exactly `vocal
   "C:\Music\song-stems"
 ```
 
+## Stem profiles
+
+A profile is the layout one separation publishes: which lanes exist, in which order, and which model produces them.
+
+| Profile | Lanes | Status |
+| --- | --- | --- |
+| Legacy | vocals, drums, bass, other | Available. This is the default and the only profile that can run. |
+| Metal | vocals, drums, bass, lead guitar, rhythm guitar, other | **Not available.** |
+
+**Metal cannot separate lead from rhythm guitar today, and this release does not do it.** The profile exists so the surrounding infrastructure is in place, and it is shown in the app as unavailable with the reason, rather than hidden.
+
+The reason is that no separation model exists that decomposes guitar into semantic lead and rhythm roles while also being redistributable and runnable offline on Windows. Every publicly available candidate was reviewed and rejected; `Compliance/evidence/metal-guitar/CONTRACT.md` records the rejection matrix and the contract any future model must satisfy.
+
+Metal cannot be turned on by editing a flag. A profile that requires a specialist and has none registered cannot be constructed in the enabled state, and readiness, separation, and the GUI each refuse it independently. Enabling it requires admitting a model through `Tools/admit_metal_guitar_model.py`, which is deny-by-default and reports `DENIED` in the shipped build:
+
+```powershell
+.\.venv\Scripts\python.exe .\Tools\admit_metal_guitar_model.py --offline
+```
+
+### Absent lanes
+
+Lead guitar is intermittent by nature: many metal tracks have no solo at all. A profile with role lanes therefore treats a silent lane as a valid result whenever the role lanes still reconstruct the isolated guitar, and records the reason in the result manifest. A silent lane that loses energy is a failure and publishes nothing. An absent lane is published as real aligned silence and shown labeled in the mixer, never hidden.
+
 ## Mixer controls
 
 | Control | Behavior |
@@ -67,15 +90,27 @@ SeparationWorker/
 |-- cli.py                    # Command-line entry point
 |-- gui.py                    # Split and Mixer views
 |-- demucs_worker.py          # Frozen worker entry point for Demucs
-|-- demucs_adapter.py         # Development/frozen Demucs command selection
+|-- demucs_adapter.py         # Profile-aware separation and publication
+|-- guitar_adapter.py         # Fail-closed Lead/Rhythm specialist boundary
 |-- gui_controller.py         # Background separation workflow
 |-- mixer_controller.py       # Async mixer state and command boundary
 `-- engine/
+    |-- stem_profile.py       # Profile registry and result manifest
+    |-- role_metrics.py       # Absence, audibility, and reconstruction limits
     |-- stem_cache.py         # App-managed temporary stem workspace
-    |-- stem_session.py       # Four-stem validation and waveform peaks
+    |-- stem_session.py       # Published-layout validation and waveform peaks
     |-- playback.py           # Shared-cursor Windows playback
     `-- mixer.py              # Immutable gain, Mute, and Solo semantics
+
+Compliance/
+|-- registry.py               # Profile-scoped, fail-closed asset readiness
+`-- evidence/metal-guitar/    # Admission contract and uncalibrated thresholds
+
+Tools/
+`-- admit_metal_guitar_model.py  # Offline, deny-by-default admission harness
 ```
+
+Admission and the runtime pipeline measure role decomposition with the same functions in `engine/role_metrics.py`. Separate copies would let a model pass one definition of "absent" and fail the other, which would make the admission gate meaningless.
 
 The GUI never performs Demucs inference, WAV analysis, or native audio writes on the Tkinter event thread. In development, the adapter runs `python -m demucs.separate`. In the portable bundle, it launches the sibling `StemslayerWorker.exe`, which is the only process that imports and runs Demucs. Publication is atomic, so an incomplete result directory is never exposed.
 
@@ -99,14 +134,19 @@ Run the portable suite with the project environment:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s Tests\Portable -v
+.\.venv\Scripts\python.exe -m unittest Tests.Admission.test_metal_guitar_admission -v
 .\.venv\Scripts\python.exe -m compileall -q SeparationWorker Tests\Portable
 ```
 
-The tests cover publication safety, Demucs diagnostics and command selection, cache lifecycle, four-stem metadata validation, synchronized playback with fake devices, controller threading, drag-and-drop payload parsing, and headless mixer view state.
+The portable tests cover publication safety, Demucs diagnostics and command selection, cache lifecycle and pipeline namespacing, profile and manifest contracts, published-layout metadata validation, role reconstruction and absence, synchronized playback with fake devices, controller threading, drag-and-drop payload parsing, and headless mixer view state.
+
+The admission suite asserts that the shipped build denies Metal. It is expected to report `DENIED`; that is the correct result while no specialist is admitted.
 
 ## MVP boundaries
 
-This release intentionally excludes macOS support, panning, mixed-WAV export, looping, waveform zoom, output-device selection, and persisted mixer settings. Demucs uses `htdemucs`; the portable release ships CPU-only PyTorch, while the source development setup may use CUDA. A complete separation retries once on CPU when a CUDA development run fails.
+This release intentionally excludes macOS support, panning, mixed-WAV export, looping, waveform zoom, output-device selection, and persisted mixer settings. It does **not** separate lead from rhythm guitar: the Metal profile ships disabled and no model is admitted. Demucs uses `htdemucs`; the portable release ships CPU-only PyTorch, while the source development setup may use CUDA. A complete separation retries once on CPU when a CUDA development run fails.
+
+Every claim here is verified on Windows only. No macOS, commercial-use, or multi-player claim is made or implied.
 
 ## Development requirements
 
