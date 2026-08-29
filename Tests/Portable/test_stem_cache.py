@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from dataclasses import replace
+
 from SeparationWorker.engine.stem_cache import (
     ORPHAN_MAX_AGE_SECONDS,
     cache_directory,
@@ -14,6 +16,7 @@ from SeparationWorker.engine.stem_cache import (
     prepare_cache_directory,
     sweep_orphans,
 )
+from SeparationWorker.engine.stem_profile import LEGACY_PROFILE, METAL_PROFILE
 
 
 class CacheKeyTests(unittest.TestCase):
@@ -44,6 +47,60 @@ class CacheKeyTests(unittest.TestCase):
             second = Path(root) / "second.mp3"
 
             self.assertNotEqual(cache_key(first), cache_key(second))
+
+
+class PipelineNamespaceTests(unittest.TestCase):
+    def admitted_metal(self, specialist_id="metal-lead-rhythm-v1"):
+        return replace(METAL_PROFILE, specialist_id=specialist_id, enabled=True)
+
+    def test_legacy_profile_keeps_the_key_published_before_profiles_existed(self):
+        audio = Path("song.mp3")
+
+        self.assertEqual(cache_key(audio), cache_key(audio, LEGACY_PROFILE))
+
+    def test_a_modified_legacy_pipeline_leaves_the_grandfathered_namespace(self):
+        audio = Path("song.mp3")
+        retrained = replace(LEGACY_PROFILE, primary_model="htdemucs_ft")
+
+        self.assertNotEqual(cache_key(audio), cache_key(audio, retrained))
+
+    def test_profiles_never_share_a_namespace_for_the_same_input(self):
+        audio = Path("song.mp3")
+
+        self.assertNotEqual(cache_key(audio, LEGACY_PROFILE), cache_key(audio, METAL_PROFILE))
+
+    def test_admitting_a_specialist_moves_metal_to_a_new_namespace(self):
+        audio = Path("song.mp3")
+
+        self.assertNotEqual(cache_key(audio, METAL_PROFILE), cache_key(audio, self.admitted_metal()))
+
+    def test_a_different_specialist_version_moves_to_a_new_namespace(self):
+        audio = Path("song.mp3")
+
+        self.assertNotEqual(
+            cache_key(audio, self.admitted_metal("v1")),
+            cache_key(audio, self.admitted_metal("v2")),
+        )
+
+    def test_namespaced_keys_stay_filesystem_safe_hex_digests(self):
+        for profile in (None, LEGACY_PROFILE, METAL_PROFILE, self.admitted_metal()):
+            with self.subTest(profile=profile and profile.profile_id):
+                key = cache_key(r"C:\songs\My Song.mp3", profile)
+
+                self.assertEqual(64, len(key))
+                self.assertTrue(all(character in "0123456789abcdef" for character in key))
+
+    def test_namespaced_keys_still_differ_per_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = Path(root) / "first.mp3"
+            second = Path(root) / "second.mp3"
+
+            self.assertNotEqual(cache_key(first, METAL_PROFILE), cache_key(second, METAL_PROFILE))
+
+    def test_namespaced_results_stay_direct_children_of_the_cache_root(self):
+        directory = cache_directory(Path("song.mp3"), METAL_PROFILE)
+
+        self.assertEqual(cache_root(), directory.parent)
 
 
 class CacheDirectoryTests(unittest.TestCase):

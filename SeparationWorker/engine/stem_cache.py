@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from .stem_profile import LEGACY_PROFILE, LEGACY_PROFILE_ID, StemProfile
+
 
 ORPHAN_MAX_AGE_SECONDS = 6 * 60 * 60
 
@@ -25,32 +27,49 @@ def cache_root() -> Path:
     return Path(tempfile.gettempdir()) / "limbus-stem-cache"
 
 
-def cache_key(audio_file: str | Path) -> str:
-    """Return a stable, filesystem-safe identifier for one input audio file.
+def _is_original_legacy_pipeline(profile: StemProfile) -> bool:
+    """Report whether a profile is the exact pipeline the legacy namespace holds."""
+    return (
+        profile.profile_id == LEGACY_PROFILE_ID
+        and profile.pipeline_fingerprint == LEGACY_PROFILE.pipeline_fingerprint
+    )
+
+
+def cache_key(audio_file: str | Path, profile: StemProfile | None = None) -> str:
+    """Return a stable, filesystem-safe identifier for one input and pipeline.
 
     The key is a hex SHA-256 digest, so it is always free of path separators,
     drive markers, extension dots, and NUL bytes. It is deterministic for
     equivalent paths (relative vs. resolved, case variants on a
     case-insensitive filesystem) and differs for different inputs.
+
+    The unmodified legacy pipeline keeps the input-only key it has always
+    used, so cache folders published before profiles existed still match.
+    Every other pipeline mixes its fingerprint into the key, so results are
+    never reused across profiles, models, or specialist versions.
     """
     resolved = str(Path(audio_file).resolve())
     normalized = os.path.normcase(resolved)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    input_digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    if profile is None or _is_original_legacy_pipeline(profile):
+        return input_digest
+    namespaced = f"{input_digest}\0{profile.pipeline_fingerprint}"
+    return hashlib.sha256(namespaced.encode("utf-8")).hexdigest()
 
 
-def cache_directory(audio_file: str | Path) -> Path:
-    """Return the deterministic cache directory for one input audio file."""
-    return cache_root() / cache_key(audio_file)
+def cache_directory(audio_file: str | Path, profile: StemProfile | None = None) -> Path:
+    """Return the deterministic cache directory for one input and pipeline."""
+    return cache_root() / cache_key(audio_file, profile)
 
 
-def prepare_cache_directory(audio_file: str | Path) -> Path:
+def prepare_cache_directory(audio_file: str | Path, profile: StemProfile | None = None) -> Path:
     """Ensure the shared cache root exists and return this file's directory.
 
     Only the shared root is created here; the leaf result directory itself is
     published atomically by ``demucs_adapter.separate_audio``.
     """
     cache_root().mkdir(parents=True, exist_ok=True)
-    return cache_directory(audio_file)
+    return cache_directory(audio_file, profile)
 
 
 def discard(directory: str | Path) -> bool:
