@@ -14,7 +14,7 @@ The recommended distribution is the **Windows x64 portable ZIP** published in [G
 
 Both portable bundles contain the GUI and their internal `StemslayerWorker.exe`; neither requires Python, Git, or a separate audio/Demucs installation. The CUDA build includes the CUDA runtime but requires a compatible NVIDIA GPU and current NVIDIA driver. The CPU build requires no NVIDIA hardware. The first separation downloads the `htdemucs` model weights. Later runs reuse the local model cache and reuse complete results for the same source when available. Internet access is required only for that first model download.
 
-Use the CUDA build when possible: Demucs inference is substantially faster on a supported NVIDIA GPU. The tradeoff is download size—the CUDA ZIP is roughly 2 GB because it carries the NVIDIA runtime, while the CPU ZIP is roughly 210 MB. The CPU build is the compatibility option and can take several minutes per song.
+Use the CUDA build when possible: Demucs inference is substantially faster on a supported NVIDIA GPU. The tradeoff is download size—the CUDA ZIP is roughly 2 GB because it carries the NVIDIA runtime, while the CPU ZIP is roughly 210 MB. The CPU build is the compatibility option and can take several minutes per song. On machines with at least eight logical processors, the CPU worker uses two coordinated chunk workers and 10% overlap to reduce separation time without changing the four-stem model. The lower overlap is a balanced performance tradeoff and can slightly reduce quality at chunk boundaries compared with Demucs' 25% default.
 
 ## Development setup
 
