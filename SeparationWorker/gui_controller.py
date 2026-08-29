@@ -8,19 +8,20 @@ from pathlib import Path
 from typing import Callable
 
 from SeparationWorker.demucs_adapter import separate_audio
+from SeparationWorker.engine import stem_cache
 
 
 @dataclass(frozen=True)
 class GuiState:
     input_file: str = ""
-    output_directory: str = ""
+    result_directory: Path | None = None
     phase: str = "idle"
-    headline: str = "Choose a song and destination"
+    headline: str = "Choose a song to separate"
     detail: str = "The result will contain vocals, drums, bass, and other."
 
     @property
     def can_start(self) -> bool:
-        return bool(self.input_file and self.output_directory and self.phase != "running")
+        return bool(self.input_file) and self.phase != "running"
 
 
 def _start_thread(target: Callable[[], None]) -> None:
@@ -31,13 +32,15 @@ class SeparationController:
     def __init__(
         self,
         *,
-        separate: Callable[[str, str], Path] = separate_audio,
+        separate: Callable[[str, str | Path], Path] = separate_audio,
+        cache_directory: Callable[[str | Path], Path] = stem_cache.prepare_cache_directory,
         start_worker: Callable[[Callable[[], None]], None] = _start_thread,
         dispatch: Callable[[Callable[[], None]], None] = lambda callback: callback(),
         on_change: Callable[[GuiState], None] = lambda _state: None,
         on_success: Callable[[Path], None] = lambda _result: None,
     ):
         self._separate = separate
+        self._cache_directory = cache_directory
         self._start_worker = start_worker
         self._dispatch = dispatch
         self._on_change = on_change
@@ -48,18 +51,20 @@ class SeparationController:
         self.state = state
         self._on_change(state)
 
-    def _selection_changed(self, **changes: str) -> bool:
+    def set_input_file(self, path: str) -> bool:
         if self.state.phase == "running":
             return False
-        state = replace(self.state, **changes)
-        ready = bool(state.input_file and state.output_directory)
+        result_directory = self._cache_directory(path) if path else None
+        ready = bool(path)
         self._set_state(
             replace(
-                state,
+                self.state,
+                input_file=path,
+                result_directory=result_directory,
                 phase="ready" if ready else "idle",
-                headline="Ready to separate" if ready else "Choose a song and destination",
+                headline="Ready to separate" if ready else "Choose a song to separate",
                 detail=(
-                    "Four WAV files will be created in the selected result folder."
+                    "Four WAV files will be prepared for the mixer."
                     if ready
                     else "The result will contain vocals, drums, bass, and other."
                 ),
@@ -67,29 +72,22 @@ class SeparationController:
         )
         return True
 
-    def set_input_file(self, path: str) -> bool:
-        return self._selection_changed(input_file=path)
-
-    def set_output_directory(self, path: str) -> bool:
-        return self._selection_changed(output_directory=path)
-
     def start(self) -> bool:
         if self.state.phase == "running":
             return False
-        if not self.state.input_file or not self.state.output_directory:
-            missing = "input audio file" if not self.state.input_file else "output directory"
+        if not self.state.input_file:
             self._set_state(
                 replace(
                     self.state,
                     phase="error",
-                    headline=f"Choose an {missing}",
-                    detail="Select both paths before starting separation.",
+                    headline="Choose an input audio file",
+                    detail="Select an input audio file before starting separation.",
                 )
             )
             return False
 
         input_file = self.state.input_file
-        output_directory = self.state.output_directory
+        result_directory = self.state.result_directory
         self._set_state(
             replace(
                 self.state,
@@ -98,15 +96,15 @@ class SeparationController:
                 detail="This can take several minutes. Keep this window open.",
             )
         )
-        self._start_worker(lambda: self._run(input_file, output_directory))
+        self._start_worker(lambda: self._run(input_file, result_directory))
         return True
 
-    def _run(self, input_file: str, output_directory: str) -> None:
+    def _run(self, input_file: str, result_directory: Path) -> None:
         try:
-            result = self._separate(input_file, output_directory)
+            result = self._separate(input_file, result_directory)
         except Exception as error:
             cause = getattr(error, "cause", str(error))
-            recovery = getattr(error, "recovery", "Check the selected paths and retry the complete song.")
+            recovery = getattr(error, "recovery", "Check the selected input and retry the complete song.")
             self._dispatch(lambda: self._finish_error(str(cause), str(recovery)))
             return
         self._dispatch(lambda: self._finish_success(Path(result)))

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import queue
+import threading
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tkinter import filedialog
 
+from SeparationWorker.engine import stem_cache
 from SeparationWorker.engine.mixer import MixerSnapshot
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.gui_controller import GuiState, SeparationController
@@ -136,7 +138,6 @@ class LimbusApp:
         self.root.configure(bg=COLORS["window"])
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._events: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
-        self._output_parent = ""
         self._view = "separation"
         self._closed = False
         self._preview_frame: int | None = None
@@ -146,9 +147,9 @@ class LimbusApp:
         self._lane_widgets: dict[str, dict[str, tk.Widget]] = {}
         self._mixer_model = MixerViewModel()
         self._syncing_controls = False
+        self._cache_directories: list[Path] = []
 
         self.input_value = tk.StringVar()
-        self.output_value = tk.StringVar()
         self.status_headline = tk.StringVar()
         self.status_detail = tk.StringVar()
         self.mixer_headline = tk.StringVar(value="Choose a four-stem folder")
@@ -168,6 +169,9 @@ class LimbusApp:
         self._render_state(self.controller.state)
         self._render_mixer_state(self.mixer_controller.state)
         self.root.after(50, self._drain_events)
+        threading.Thread(
+            target=stem_cache.sweep_orphans, name="limbus-stem-cache-sweep", daemon=True
+        ).start()
 
     def _build(self) -> None:
         self.workspace = tk.Frame(self.root, bg=COLORS["window"])
@@ -214,7 +218,6 @@ class LimbusApp:
         paths.grid(row=3, column=0, padx=32, pady=(22, 0), sticky="ew")
         paths.grid_columnconfigure(0, weight=1)
         self.input_button = self._path_row(paths, 0, "INPUT AUDIO", self.input_value, "Browse file", self._pick_input)
-        self.output_button = self._path_row(paths, 1, "RESULT FOLDER", self.output_value, "Choose folder", self._pick_output)
 
         footer = tk.Frame(shell, bg=COLORS["panel"])
         footer.grid(row=4, column=0, padx=32, pady=(24, 30), sticky="ew")
@@ -228,10 +231,8 @@ class LimbusApp:
         tk.Label(status_copy, textvariable=self.status_headline, bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI Semibold", 10)).pack(anchor="w")
         tk.Label(status_copy, textvariable=self.status_detail, bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI", 9), wraplength=420, justify="left").pack(anchor="w", pady=(3, 0))
 
-        self.open_folder_button = tk.Button(footer, text="Open stems folder", command=self._pick_stems_folder, bg=COLORS["field"], fg=COLORS["text"], activebackground=COLORS["line"], activeforeground=COLORS["text"], relief="flat", bd=0, padx=14, pady=11, font=("Segoe UI Semibold", 9), cursor="hand2")
-        self.open_folder_button.grid(row=0, column=1, padx=(16, 0), sticky="e")
         self.action = tk.Button(footer, text="Separate into 4 stems", command=self._start, bg=COLORS["button"], fg=COLORS["button_text"], activebackground="#ffffff", activeforeground=COLORS["button_text"], disabledforeground="#667487", relief="flat", bd=0, padx=20, pady=12, font=("Segoe UI Semibold", 10), cursor="hand2")
-        self.action.grid(row=0, column=2, padx=(10, 0), sticky="e")
+        self.action.grid(row=0, column=1, padx=(16, 0), sticky="e")
 
     def _build_mixer_view(self) -> None:
         shell = self.mixer_view
@@ -254,17 +255,19 @@ class LimbusApp:
 
         transport = tk.Frame(shell, bg=COLORS["panel"])
         transport.grid(row=2, column=0, padx=24, pady=(0, 12), sticky="ew")
-        transport.grid_columnconfigure(2, weight=1)
+        transport.grid_columnconfigure(3, weight=1)
         self.play_button = tk.Button(transport, text="Play", command=self._toggle_play, bg=COLORS["button"], fg=COLORS["button_text"], activebackground="#ffffff", activeforeground=COLORS["button_text"], disabledforeground="#667487", relief="flat", bd=0, padx=18, pady=8, font=("Segoe UI Semibold", 9), cursor="hand2")
         self.play_button.grid(row=0, column=0, sticky="w")
+        self.export_button = tk.Button(transport, text="Exportar", command=self._open_export_dialog, bg=COLORS["field"], fg=COLORS["text"], activebackground=COLORS["line"], activeforeground=COLORS["text"], disabledforeground="#667487", relief="flat", bd=0, padx=14, pady=8, font=("Segoe UI Semibold", 9), cursor="hand2")
+        self.export_button.grid(row=0, column=1, padx=(10, 0), sticky="w")
         self.mixer_status = tk.Label(transport, textvariable=self.mixer_headline, bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI Semibold", 9))
-        self.mixer_status.grid(row=0, column=1, padx=(16, 14), sticky="w")
+        self.mixer_status.grid(row=0, column=2, padx=(16, 14), sticky="w")
         self.timeline = tk.Canvas(transport, height=26, bg=COLORS["panel"], highlightthickness=0)
-        self.timeline.grid(row=0, column=2, sticky="ew")
+        self.timeline.grid(row=0, column=3, sticky="ew")
         self.timeline.bind("<Button-1>", self._seek_press)
         self.timeline.bind("<B1-Motion>", self._seek_motion)
         self.timeline.bind("<ButtonRelease-1>", self._seek_release)
-        tk.Label(transport, textvariable=self.mixer_time, bg=COLORS["panel"], fg=COLORS["muted"], font=("Consolas", 9)).grid(row=0, column=3, padx=(14, 0), sticky="e")
+        tk.Label(transport, textvariable=self.mixer_time, bg=COLORS["panel"], fg=COLORS["muted"], font=("Consolas", 9)).grid(row=0, column=4, padx=(14, 0), sticky="e")
 
         lanes = tk.Frame(shell, bg=COLORS["panel"])
         lanes.grid(row=3, column=0, padx=24, pady=(0, 20), sticky="nsew")
@@ -313,31 +316,150 @@ class LimbusApp:
         selected = filedialog.askopenfilename(parent=self.root, title="Choose input audio", filetypes=(("Audio files", "*.wav *.mp3 *.flac *.m4a *.ogg"), ("All files", "*.*")))
         if selected:
             self.controller.set_input_file(selected)
-            if self._output_parent:
-                self.controller.set_output_directory(str(Path(self._output_parent) / f"{Path(selected).stem}-stems"))
-
-    def _pick_output(self) -> None:
-        selected = filedialog.askdirectory(parent=self.root, title="Choose where to create the stem folder")
-        if selected:
-            self._output_parent = selected
-            result_name = f"{Path(self.controller.state.input_file).stem}-stems" if self.controller.state.input_file else "separated-stems"
-            self.controller.set_output_directory(str(Path(selected) / result_name))
 
     def _pick_stems_folder(self) -> None:
         selected = filedialog.askdirectory(parent=self.root, title="Choose a folder with four WAV stems")
         if selected:
-            self._open_mixer_folder(selected)
+            self._open_mixer_folder(selected, title=Path(selected).name)
 
-    def _open_mixer_folder(self, folder: str | Path) -> None:
+    def _open_mixer_folder(self, folder: str | Path, *, title: str = "") -> None:
         self._show_view("mixer")
         self._preview_frame = None
-        self.mixer_controller.load(folder)
+        self.mixer_controller.load(folder, title=title)
 
     def _start(self) -> None:
         self.controller.start()
 
     def _separation_succeeded(self, result: Path) -> None:
-        self._open_mixer_folder(result)
+        self._cache_directories.append(Path(result))
+        input_file = self.controller.state.input_file
+        title = Path(input_file).stem if input_file else ""
+        self._open_mixer_folder(result, title=title)
+
+    def _open_export_dialog(self) -> None:
+        if not self.mixer_controller.state.has_session:
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Exportar pistas")
+        dialog.transient(self.root)
+        dialog.configure(bg=COLORS["panel"])
+        dialog.geometry("360x320")
+        dialog.resizable(False, False)
+
+        stem_vars: dict[str, tk.BooleanVar] = {
+            stem_name: tk.BooleanVar(value=True) for stem_name, _label, _color in STEM_ROWS
+        }
+        select_all_var = tk.BooleanVar(value=True)
+
+        body = tk.Frame(dialog, bg=COLORS["panel"])
+        body.pack(fill="both", expand=True, padx=18, pady=16)
+
+        select_all = tk.Checkbutton(
+            body,
+            text="Seleccionar todos",
+            variable=select_all_var,
+            command=lambda: self._set_all_export_vars(stem_vars, select_all_var.get()),
+            bg=COLORS["panel"],
+            fg=COLORS["text"],
+            selectcolor=COLORS["field"],
+            activebackground=COLORS["panel"],
+            activeforeground=COLORS["text"],
+            font=("Segoe UI Semibold", 9),
+        )
+        select_all.pack(anchor="w", pady=(0, 8))
+
+        for stem_name, label, _color in STEM_ROWS:
+            tk.Checkbutton(
+                body,
+                text=label,
+                variable=stem_vars[stem_name],
+                bg=COLORS["panel"],
+                fg=COLORS["text"],
+                selectcolor=COLORS["field"],
+                activebackground=COLORS["panel"],
+                activeforeground=COLORS["text"],
+                font=("Segoe UI", 9),
+            ).pack(anchor="w", pady=2)
+
+        message = tk.Label(body, text="", bg=COLORS["panel"], fg=COLORS["error"], font=("Segoe UI", 8), wraplength=320, justify="left")
+        message.pack(anchor="w", pady=(10, 0))
+
+        results_frame = tk.Frame(body, bg=COLORS["panel"])
+        results_frame.pack(fill="both", expand=True, pady=(4, 0))
+
+        export_button = tk.Button(
+            body,
+            text="Exportar 4 seleccionados",
+            bg=COLORS["button"],
+            fg=COLORS["button_text"],
+            activebackground="#ffffff",
+            activeforeground=COLORS["button_text"],
+            disabledforeground="#667487",
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=8,
+            font=("Segoe UI Semibold", 9),
+            cursor="hand2",
+        )
+        export_button.pack(anchor="e", pady=(12, 0))
+
+        def refresh_button_label(*_args) -> None:
+            count = sum(1 for var in stem_vars.values() if var.get())
+            export_button.configure(
+                text=f"Exportar {count} seleccionados",
+                state="normal" if count else "disabled",
+            )
+
+        for var in stem_vars.values():
+            var.trace_add("write", refresh_button_label)
+        refresh_button_label()
+
+        def start_export() -> None:
+            chosen = filedialog.askdirectory(parent=dialog, title="Elegí la carpeta destino")
+            if not chosen:
+                return
+            selected_names = [name for name, var in stem_vars.items() if var.get()]
+            ok = self.mixer_controller.export_stems(selected_names, chosen)
+            if not ok:
+                message.configure(text="No se pudo exportar (sesión no disponible)")
+                return
+            message.configure(text="Exportando…")
+            select_all.configure(state="disabled")
+            export_button.configure(state="disabled")
+            for widget in body.winfo_children():
+                if isinstance(widget, tk.Checkbutton):
+                    widget.configure(state="disabled")
+            self.root.after(100, lambda: self._poll_export_dialog(dialog, message, results_frame, export_button))
+
+        export_button.configure(command=start_export)
+
+    def _set_all_export_vars(self, stem_vars: dict[str, tk.BooleanVar], value: bool) -> None:
+        for var in stem_vars.values():
+            var.set(value)
+
+    def _poll_export_dialog(self, dialog: tk.Toplevel, message: tk.Label, results_frame: tk.Frame, export_button: tk.Button) -> None:
+        if not dialog.winfo_exists():
+            return
+        state = self.mixer_controller.state
+        if state.export_phase == "running":
+            self.root.after(100, lambda: self._poll_export_dialog(dialog, message, results_frame, export_button))
+            return
+        if state.export_phase != "done":
+            return
+
+        message.configure(text="Exportación finalizada")
+        labels = {stem_name: label for stem_name, label, _color in STEM_ROWS}
+        for stem_name, path, code in state.export_results:
+            display_name = labels.get(stem_name, stem_name)
+            if path is not None:
+                text = f"{display_name}: ✓ {path.name}"
+            else:
+                text = f"{display_name}: ✗ {code}"
+            tk.Label(results_frame, text=text, bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI", 9), anchor="w", justify="left").pack(anchor="w", pady=1)
+
+        export_button.configure(text="Cerrar", state="normal", command=dialog.destroy)
 
     def _show_view(self, view: str) -> None:
         if view == "mixer":
@@ -352,14 +474,12 @@ class LimbusApp:
 
     def _render_state(self, state: GuiState) -> None:
         self.input_value.set(state.input_file)
-        self.output_value.set(state.output_directory)
         self.status_headline.set(state.headline)
         self.status_detail.set(state.detail)
         marker = COLORS["error"] if state.phase == "error" else COLORS["success"] if state.phase == "success" else COLORS["muted"]
         self.status_marker.configure(bg=marker)
         running = state.phase == "running"
-        for button in (self.input_button, self.output_button, self.open_folder_button):
-            button.configure(state="disabled" if running else "normal")
+        self.input_button.configure(state="disabled" if running else "normal")
         self.action.configure(state="normal" if state.can_start else "disabled", text="Separating…" if running else "Separate into 4 stems")
 
     def _render_mixer_state(self, state: MixerState) -> None:
@@ -373,6 +493,7 @@ class LimbusApp:
         self.mixer_detail.set(state.detail)
         self.mixer_time.set(f"{format_time(model.position_seconds)} / {format_time(model.duration_seconds)}")
         self.play_button.configure(text="Pause" if state.playing else "Play", state="normal" if state.can_play else "disabled")
+        self.export_button.configure(state="normal" if (state.session is not None and state.phase in {"ready", "playing"}) else "disabled")
         self.load_folder_button.configure(state="disabled" if state.phase == "loading" else "normal")
         self._syncing_controls = True
         try:
@@ -506,6 +627,11 @@ class LimbusApp:
             self.mixer_controller.close()
         except AttributeError:
             pass
+        # The playback engine must be closed first: its worker thread join is
+        # what releases the SoundFile read handles that would otherwise turn
+        # a Windows cache-directory cleanup into a sharing violation.
+        for directory in self._cache_directories:
+            stem_cache.discard(directory)
         self.root.destroy()
 
     def _drain_events(self) -> None:
