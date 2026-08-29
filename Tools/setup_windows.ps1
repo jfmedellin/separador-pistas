@@ -40,7 +40,7 @@ Invoke-SetupStep "Installing PyTorch 2.13.0 with CUDA 13.0 support..." {
 }
 
 Invoke-SetupStep "Installing the Windows MVP audio dependencies..." {
-    & $venvPython -m pip install demucs==4.1.0 soundfile==0.13.1
+    & $venvPython -m pip install demucs==4.1.0 soundfile==0.13.1 sounddevice==0.5.6
 }
 
 Write-Host "Windows MVP environment is ready: $venvPython"

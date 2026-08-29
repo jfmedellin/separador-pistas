@@ -3,3 +3,33 @@
 __pycache__/
 *.py[cod]
 .codegraph/
+
+# Local Python and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Generated audio and model artifacts
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*-stems/
+outputs/
+models/
+
+# Local project brief (not required to run the application)
+Prompt Maestro - Limbus Split Pro.pdf
