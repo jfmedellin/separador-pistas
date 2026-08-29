@@ -16,7 +16,7 @@ from SeparationWorker.runtime.worker_main import install_network_denial, runtime
 
 
 IDENTITIES = {
-    "worker": {"id": "limbus-worker", "sha256": "a" * 64},
+    "worker": {"id": "stemslayer-worker", "sha256": "a" * 64},
     "runtime": {"id": "cpython-portable", "sha256": "b" * 64},
     "model": {"id": "test-model", "sha256": "c" * 64},
 }

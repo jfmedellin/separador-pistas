@@ -31,7 +31,7 @@ def _write_stem_wavs(folder: Path) -> None:
 class HeadlessApp:
     """Minimal reproduction of gui.py's cache-tracking orchestration.
 
-    Mirrors LimbusApp exactly on the two properties under test: only the
+    Mirrors StemslayerApp exactly on the two properties under test: only the
     auto-open path (a completed separation) appends to ``cache_directories``,
     and close() discards those tracked directories only after the mixer
     controller has released its playback resources.

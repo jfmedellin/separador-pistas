@@ -12,7 +12,7 @@ from SeparationWorker.engine.publication import PublicationError
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="limbus-separate",
+        prog="stemslayer-separate",
         description="Separate one audio file into vocals, drums, bass, and other stems.",
     )
     parser.add_argument("audio_file", help="Input audio file")

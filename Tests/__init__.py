@@ -1,1 +1,1 @@
-"""Limbus Split Pro tests."""
+"""Stemslayer tests."""

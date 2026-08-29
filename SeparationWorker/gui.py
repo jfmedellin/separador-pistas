@@ -1,4 +1,4 @@
-"""Tkinter studio workspace for separating and auditioning Windows stems."""
+"""Tkinter/customtkinter studio workspace for separating and auditioning Windows stems."""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from tkinter import filedialog
 
+import customtkinter as ctk
+from tkinterdnd2 import DND_FILES, TkinterDnD
+
 from SeparationWorker.engine import stem_cache
 from SeparationWorker.engine.mixer import MixerSnapshot
 from SeparationWorker.engine.stem_session import STEM_NAMES
@@ -17,27 +20,46 @@ from SeparationWorker.gui_controller import GuiState, SeparationController
 from SeparationWorker.mixer_controller import MixerController, MixerState
 
 
+# Kanagawa Dragon palette (https://github.com/rebelot/kanagawa.nvim).
 COLORS = {
-    "window": "#090e16",
-    "panel": "#111a28",
-    "field": "#182436",
-    "line": "#26354a",
-    "text": "#eef3f8",
-    "muted": "#91a0b2",
-    "button": "#d7e2ef",
-    "button_text": "#0b1420",
-    "error": "#ed7772",
-    "success": "#58b89f",
-    "playhead": "#f4f7fa",
+    "window": "#0D0C0C",
+    "surface": "#161514",
+    "surface_alt": "#131211",
+    "field": "#1D1C19",
+    "line": "#282727",
+    "line_strong": "#625E5A",
+    "text": "#DCD7BA",
+    "muted": "#9E9B93",
+    "muted2": "#7A756F",
+    "disabled": "#5A5750",
+    "accent": "#C4B28A",
+    "accent_hover": "#D8C69D",
+    "accent_text": "#0D0C0C",
+    "error": "#C4746E",
+    "success": "#87A987",
 }
 
 STEMS = (
-    ("VOCALS", "#db6d78"),
-    ("DRUMS", "#d69d49"),
-    ("BASS", "#48a78f"),
-    ("OTHER", "#788bd5"),
+    ("VOCALS", "#A292A3"),
+    ("DRUMS", "#B6927B"),
+    ("BASS", "#87A987"),
+    ("OTHER", "#8BA4B0"),
 )
 STEM_ROWS = tuple((name.lower() + ".wav", name, color) for name, color in STEMS)
+STEM_ICONS = {"vocals.wav": "mic", "drums.wav": "drum", "bass.wav": "bass", "other.wav": "layers"}
+APP_NAME = "Stemslayer"
+
+NAV_HEIGHT = 60
+
+
+def parse_drop_paths(data: str, splitlist: Callable[[str], tuple[str, ...]]) -> tuple[str, ...]:
+    """Parse a Tcl/Tk file-list payload without breaking paths that contain spaces."""
+    if not data:
+        return ()
+    try:
+        return tuple(path for path in splitlist(data) if path)
+    except (TypeError, tk.TclError):
+        return ()
 
 
 def format_time(seconds: float) -> str:
@@ -45,6 +67,94 @@ def format_time(seconds: float) -> str:
     seconds = max(0.0, float(seconds))
     minutes, remainder = divmod(seconds, 60.0)
     return f"{int(minutes):02d}:{remainder:05.2f}"
+
+
+def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
+    """Draw a small stroke-based glyph on a bare canvas (no icon-font dependency)."""
+    canvas.delete("icon")
+    pad = size * 0.18
+    if kind == "play":
+        canvas.create_polygon(pad, pad, pad, size - pad, size - pad, size / 2, fill=color, outline="", tags="icon")
+    elif kind == "pause":
+        bar_w, gap = size * 0.2, size * 0.16
+        canvas.create_rectangle(size / 2 - gap / 2 - bar_w, pad, size / 2 - gap / 2, size - pad, fill=color, outline="", tags="icon")
+        canvas.create_rectangle(size / 2 + gap / 2, pad, size / 2 + gap / 2 + bar_w, size - pad, fill=color, outline="", tags="icon")
+    elif kind == "audio":
+        canvas.create_line(size * 0.4, size * 0.78, size * 0.4, size * 0.2, fill=color, width=2, tags="icon")
+        canvas.create_line(size * 0.4, size * 0.2, size * 0.78, size * 0.1, fill=color, width=2, tags="icon")
+        canvas.create_line(size * 0.78, size * 0.1, size * 0.78, size * 0.56, fill=color, width=2, tags="icon")
+        canvas.create_oval(size * 0.26, size * 0.68, size * 0.44, size * 0.86, outline=color, width=2, tags="icon")
+        canvas.create_oval(size * 0.64, size * 0.54, size * 0.82, size * 0.72, outline=color, width=2, tags="icon")
+    elif kind == "mic":
+        canvas.create_rectangle(size * 0.4, size * 0.08, size * 0.6, size * 0.55, outline=color, width=2, tags="icon")
+        canvas.create_arc(size * 0.24, size * 0.32, size * 0.76, size * 0.72, start=180, extent=180, style="arc", outline=color, width=2, tags="icon")
+        canvas.create_line(size / 2, size * 0.72, size / 2, size * 0.9, fill=color, width=2, tags="icon")
+        canvas.create_line(size * 0.33, size * 0.9, size * 0.67, size * 0.9, fill=color, width=2, tags="icon")
+    elif kind == "drum":
+        canvas.create_oval(size * 0.12, size * 0.12, size * 0.88, size * 0.48, outline=color, width=2, tags="icon")
+        canvas.create_arc(size * 0.12, size * 0.32, size * 0.88, size * 0.84, start=180, extent=180, style="arc", outline=color, width=2, tags="icon")
+        canvas.create_line(size * 0.12, size * 0.3, size * 0.12, size * 0.58, fill=color, width=2, tags="icon")
+        canvas.create_line(size * 0.88, size * 0.3, size * 0.88, size * 0.58, fill=color, width=2, tags="icon")
+    elif kind == "bass":
+        canvas.create_oval(size * 0.08, size * 0.54, size * 0.5, size * 0.96, outline=color, width=2, tags="icon")
+        canvas.create_line(size * 0.42, size * 0.62, size * 0.92, size * 0.08, fill=color, width=2, tags="icon")
+    elif kind == "layers":
+        canvas.create_rectangle(size * 0.16, size * 0.55, size * 0.34, size * 0.9, fill=color, outline="", tags="icon")
+        canvas.create_rectangle(size * 0.42, size * 0.28, size * 0.6, size * 0.9, fill=color, outline="", tags="icon")
+        canvas.create_rectangle(size * 0.68, size * 0.65, size * 0.86, size * 0.9, fill=color, outline="", tags="icon")
+    elif kind == "check":
+        canvas.create_oval(pad, pad, size - pad, size - pad, outline=color, width=2, tags="icon")
+        canvas.create_line(size * 0.3, size * 0.52, size * 0.44, size * 0.66, size * 0.72, size * 0.34, fill=color, width=2, tags="icon")
+    elif kind == "alert":
+        canvas.create_oval(pad, pad, size - pad, size - pad, outline=color, width=2, tags="icon")
+        canvas.create_line(size / 2, size * 0.32, size / 2, size * 0.58, fill=color, width=2, tags="icon")
+        canvas.create_oval(size / 2 - 1.5, size * 0.68, size / 2 + 1.5, size * 0.68 + 3, fill=color, outline="", tags="icon")
+    elif kind == "dot":
+        canvas.create_oval(size * 0.35, size * 0.35, size * 0.65, size * 0.65, fill=color, outline="", tags="icon")
+
+
+def _icon(parent: tk.Widget, kind: str, size: int, color: str, bg: str) -> tk.Canvas:
+    canvas = tk.Canvas(parent, width=size, height=size, bg=bg, highlightthickness=0)
+    _draw_icon(canvas, kind, size, color)
+    return canvas
+
+
+class _RoundButton:
+    """A circular, icon-only transport button (plain Tk/CTk has no built-in one)."""
+
+    def __init__(self, parent: tk.Widget, *, diameter: int, fg: str, fg_disabled: str, icon_color: str, command: Callable[[], None]):
+        self._fg = fg
+        self._fg_disabled = fg_disabled
+        self._icon_color = icon_color
+        self._icon_kind = "play"
+        self._command = command
+        self._enabled = True
+        self.frame = ctk.CTkFrame(parent, width=diameter, height=diameter, corner_radius=diameter // 2, fg_color=fg)
+        self.frame.pack_propagate(False)
+        self._size = diameter
+        self.canvas = tk.Canvas(self.frame, width=diameter, height=diameter, bg=fg, highlightthickness=0, cursor="hand2")
+        self.canvas.pack(expand=True)
+        self.canvas.bind("<Button-1>", self._on_click)
+        self._redraw()
+
+    def _redraw(self) -> None:
+        color = self._icon_color if self._enabled else COLORS["muted2"]
+        _draw_icon(self.canvas, self._icon_kind, self._size, color)
+
+    def set_icon(self, kind: str) -> None:
+        self._icon_kind = kind
+        self._redraw()
+
+    def _on_click(self, _event=None) -> None:
+        if self._enabled:
+            self._command()
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        color = self._fg if enabled else self._fg_disabled
+        self.frame.configure(fg_color=color)
+        self.canvas.configure(bg=color, cursor="hand2" if enabled else "arrow")
+        self._redraw()
 
 
 @dataclass(frozen=True)
@@ -129,13 +239,11 @@ class MixerViewModel:
         return replace(self, preview_frame=max(0, min(int(frame), self.frame_count)))
 
 
-class LimbusApp:
-    def __init__(self, root: tk.Tk):
+class StemslayerApp:
+    def __init__(self, root: ctk.CTk):
         self.root = root
-        self.root.title("Limbus Split")
-        self.root.geometry("1120x720")
-        self.root.minsize(800, 560)
-        self.root.configure(bg=COLORS["window"])
+        self.root.title(APP_NAME)
+        self.root.configure(fg_color=COLORS["window"])
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._events: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._view = "separation"
@@ -144,12 +252,12 @@ class LimbusApp:
         self._seek_dragging = False
         self._waveform_session = None
         self._waveform_canvases: dict[str, tk.Canvas] = {}
-        self._lane_widgets: dict[str, dict[str, tk.Widget]] = {}
+        self._lane_widgets: dict[str, dict[str, object]] = {}
         self._mixer_model = MixerViewModel()
         self._syncing_controls = False
         self._cache_directories: list[Path] = []
+        self.export_overlay: ctk.CTkFrame | None = None
 
-        self.input_value = tk.StringVar()
         self.status_headline = tk.StringVar()
         self.status_detail = tk.StringVar()
         self.mixer_headline = tk.StringVar(value="Choose a four-stem folder")
@@ -168,132 +276,341 @@ class LimbusApp:
         )
         self._render_state(self.controller.state)
         self._render_mixer_state(self.mixer_controller.state)
+        self._show_view("separation")
         self.root.after(50, self._drain_events)
         threading.Thread(
-            target=stem_cache.sweep_orphans, name="limbus-stem-cache-sweep", daemon=True
+            target=stem_cache.sweep_orphans, name="stemslayer-stem-cache-sweep", daemon=True
         ).start()
 
     def _build(self) -> None:
-        self.workspace = tk.Frame(self.root, bg=COLORS["window"])
-        self.workspace.grid(row=0, column=0, padx=24, pady=22, sticky="nsew")
-        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_rowconfigure(2, weight=1)
         self.root.grid_columnconfigure(0, weight=1)
+        self._build_nav()
+
+        self.workspace = ctk.CTkFrame(self.root, fg_color=COLORS["window"], corner_radius=0)
+        self.workspace.grid(row=2, column=0, sticky="nsew")
         self.workspace.grid_rowconfigure(0, weight=1)
         self.workspace.grid_columnconfigure(0, weight=1)
 
-        self.separation_view = tk.Frame(self.workspace, bg=COLORS["panel"], highlightthickness=1, highlightbackground=COLORS["line"])
+        self.separation_view = ctk.CTkFrame(self.workspace, fg_color=COLORS["window"], corner_radius=0)
         self.separation_view.grid(row=0, column=0, sticky="nsew")
         self._build_separation_view()
 
-        self.mixer_view = tk.Frame(self.workspace, bg=COLORS["panel"], highlightthickness=1, highlightbackground=COLORS["line"])
+        self.mixer_view = ctk.CTkFrame(self.workspace, fg_color=COLORS["window"], corner_radius=0)
         self._build_mixer_view()
 
-    def _build_rail(self, parent: tk.Widget) -> None:
-        rail = tk.Frame(parent, bg=COLORS["panel"], height=5)
-        rail.grid(row=0, column=0, sticky="ew")
-        for index, (_name, color) in enumerate(STEMS):
-            rail.grid_columnconfigure(index, weight=1)
-            tk.Frame(rail, bg=color, height=5).grid(row=0, column=index, padx=(0 if index == 0 else 2, 0), sticky="ew")
+    def _build_nav(self) -> None:
+        nav = ctk.CTkFrame(self.root, height=NAV_HEIGHT, corner_radius=0, fg_color=COLORS["window"])
+        nav.grid(row=0, column=0, sticky="ew")
+        nav.grid_propagate(False)
+        nav.grid_columnconfigure(2, weight=1)
+
+        ctk.CTkLabel(nav, text=APP_NAME.upper(), text_color=COLORS["text"], font=("Segoe UI", 14, "bold")).grid(
+            row=0, column=0, padx=(32, 36)
+        )
+
+        tabs = ctk.CTkFrame(nav, fg_color="transparent")
+        tabs.grid(row=0, column=1, sticky="w")
+        self._tab_buttons: dict[str, ctk.CTkButton] = {}
+        self._tab_underlines: dict[str, ctk.CTkFrame] = {}
+        tab_specs = (
+            ("separation", "SPLIT", lambda: self._show_view("separation")),
+            ("mixer", "MIXER", lambda: self._show_view("mixer")),
+            ("export", "EXPORT", self._open_export_dialog),
+        )
+        for index, (key, label, handler) in enumerate(tab_specs):
+            column = ctk.CTkFrame(tabs, fg_color="transparent")
+            column.grid(row=0, column=index, padx=(0 if index == 0 else 24, 0))
+            button = ctk.CTkButton(
+                column,
+                text=label,
+                command=handler,
+                fg_color="transparent",
+                hover_color=COLORS["field"],
+                text_color=COLORS["muted2"],
+                text_color_disabled=COLORS["disabled"],
+                font=("Segoe UI", 11, "bold"),
+                corner_radius=6,
+                height=NAV_HEIGHT - 20,
+            )
+            button.pack()
+            underline = ctk.CTkFrame(column, height=2, corner_radius=0, fg_color=COLORS["window"])
+            underline.pack(fill="x")
+            self._tab_buttons[key] = button
+            self._tab_underlines[key] = underline
+
+        divider = ctk.CTkFrame(self.root, height=1, corner_radius=0, fg_color=COLORS["line"])
+        divider.grid(row=1, column=0, sticky="ew")
+
+    def _set_active_tab(self, key: str) -> None:
+        for tab_key, button in self._tab_buttons.items():
+            active = tab_key == key
+            button.configure(text_color=COLORS["text"] if active else COLORS["muted2"])
+            self._tab_underlines[tab_key].configure(fg_color=COLORS["accent"] if active else COLORS["window"])
 
     def _build_separation_view(self) -> None:
         shell = self.separation_view
         shell.grid_columnconfigure(0, weight=1)
-        self._build_rail(shell)
+        shell.grid_rowconfigure(0, weight=1)
 
-        header = tk.Frame(shell, bg=COLORS["panel"])
-        header.grid(row=1, column=0, padx=32, pady=(27, 23), sticky="ew")
-        tk.Label(header, text="LIMBUS  /  SPLIT", bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w")
-        tk.Label(header, text="Four clean channels. One local pass.", bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI Semibold", 21)).pack(anchor="w", pady=(7, 0))
+        center = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0, width=600)
+        center.place(relx=0.5, y=30, anchor="n")
 
-        channels = tk.Frame(shell, bg=COLORS["panel"])
-        channels.grid(row=2, column=0, padx=32, sticky="ew")
+        header = ctk.CTkFrame(center, fg_color=COLORS["window"], corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text="Four clean channels. One local pass.", text_color=COLORS["text"], font=("Segoe UI", 22, "bold")).pack()
+        ctk.CTkLabel(
+            header,
+            text="Select your source audio, then split it into four clean local stems.",
+            text_color=COLORS["muted"],
+            font=("Segoe UI", 12),
+        ).pack(pady=(6, 0))
+
+        ctk.CTkLabel(center, text="INPUT AUDIO", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
+            fill="x", pady=(28, 6)
+        )
+        dropzone = ctk.CTkFrame(center, fg_color=COLORS["surface_alt"], corner_radius=12, border_width=1, border_color=COLORS["line_strong"])
+        dropzone.pack(fill="x")
+        dz_inner = ctk.CTkFrame(dropzone, fg_color="transparent")
+        dz_inner.pack(pady=22)
+        _icon(dz_inner, "audio", 26, COLORS["muted"], COLORS["surface_alt"]).pack()
+        self.input_value_label = ctk.CTkLabel(dz_inner, text="No file selected", text_color=COLORS["text"], font=("Segoe UI", 12, "bold"))
+        self.input_value_label.pack(pady=(10, 2))
+        drop_hint = ctk.CTkLabel(
+            dz_inner,
+            text="Drag and drop an audio file, or click to browse",
+            text_color=COLORS["muted2"],
+            font=("Segoe UI", 10),
+        )
+        drop_hint.pack()
+        self.input_button = ctk.CTkButton(
+            dz_inner,
+            text="Browse file",
+            command=self._pick_input,
+            fg_color="transparent",
+            hover_color=COLORS["field"],
+            border_width=1,
+            border_color=COLORS["line_strong"],
+            text_color=COLORS["text"],
+            corner_radius=8,
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.input_button.pack(pady=(12, 0))
+        for widget in (dropzone, dz_inner):
+            widget.bind("<Button-1>", lambda _event: self._pick_input())
+        self._register_drop_zone(dropzone)
+
+        ctk.CTkLabel(center, text="CHANNELS TO EXTRACT", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
+            fill="x", pady=(24, 6)
+        )
+        chips = ctk.CTkFrame(center, fg_color="transparent")
+        chips.pack(fill="x")
         for index, (name, color) in enumerate(STEMS):
-            channels.grid_columnconfigure(index, weight=1)
-            channel = tk.Frame(channels, bg=COLORS["field"], highlightthickness=1, highlightbackground=COLORS["line"])
-            channel.grid(row=0, column=index, padx=(0 if index == 0 else 5, 0), sticky="ew")
-            tk.Frame(channel, bg=color, width=4, height=26).pack(side="left")
-            tk.Label(channel, text=name, bg=COLORS["field"], fg=COLORS["muted"], font=("Segoe UI Semibold", 8)).pack(side="left", padx=10, pady=7)
+            chips.grid_columnconfigure(index, weight=1)
+            chip = ctk.CTkFrame(chips, fg_color=COLORS["field"], corner_radius=999, border_width=1, border_color=COLORS["line"])
+            chip.grid(row=0, column=index, padx=(0 if index == 0 else 8, 0), sticky="ew")
+            inner = ctk.CTkFrame(chip, fg_color="transparent")
+            inner.pack(pady=10)
+            dot = tk.Canvas(inner, width=8, height=8, bg=COLORS["field"], highlightthickness=0)
+            dot.create_oval(0, 0, 8, 8, fill=color, outline="")
+            dot.pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(inner, text=name, text_color=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(side="left")
 
-        paths = tk.Frame(shell, bg=COLORS["panel"])
-        paths.grid(row=3, column=0, padx=32, pady=(22, 0), sticky="ew")
-        paths.grid_columnconfigure(0, weight=1)
-        self.input_button = self._path_row(paths, 0, "INPUT AUDIO", self.input_value, "Browse file", self._pick_input)
+        self.status_banner = ctk.CTkFrame(center, fg_color=COLORS["surface"], corner_radius=10)
+        self.status_banner.pack(fill="x", pady=(28, 0))
+        banner_inner = ctk.CTkFrame(self.status_banner, fg_color="transparent")
+        banner_inner.pack(fill="x", padx=16, pady=14)
+        self.status_icon = _icon(banner_inner, "dot", 20, COLORS["muted"], COLORS["surface"])
+        self.status_icon.pack(side="left", padx=(0, 12))
+        status_copy = ctk.CTkFrame(banner_inner, fg_color="transparent")
+        status_copy.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(
+            status_copy, textvariable=self.status_headline, text_color=COLORS["text"], font=("Segoe UI", 12, "bold"), anchor="w"
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            status_copy,
+            textvariable=self.status_detail,
+            text_color=COLORS["muted"],
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=460,
+        ).pack(fill="x", pady=(2, 0))
 
-        footer = tk.Frame(shell, bg=COLORS["panel"])
-        footer.grid(row=4, column=0, padx=32, pady=(24, 30), sticky="ew")
-        footer.grid_columnconfigure(0, weight=1)
-        status = tk.Frame(footer, bg=COLORS["panel"])
-        status.grid(row=0, column=0, sticky="w")
-        self.status_marker = tk.Frame(status, bg=COLORS["muted"], width=4, height=42)
-        self.status_marker.pack(side="left", fill="y", padx=(0, 12))
-        status_copy = tk.Frame(status, bg=COLORS["panel"])
-        status_copy.pack(side="left")
-        tk.Label(status_copy, textvariable=self.status_headline, bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI Semibold", 10)).pack(anchor="w")
-        tk.Label(status_copy, textvariable=self.status_detail, bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI", 9), wraplength=420, justify="left").pack(anchor="w", pady=(3, 0))
+        footer = ctk.CTkFrame(center, fg_color="transparent")
+        footer.pack(fill="x", pady=(20, 40))
+        self.action = ctk.CTkButton(
+            footer,
+            text="Separate into 4 stems",
+            command=self._start,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["accent_text"],
+            text_color_disabled=COLORS["muted2"],
+            corner_radius=8,
+            font=("Segoe UI", 12, "bold"),
+            height=40,
+        )
+        self.action.pack(side="right")
 
-        self.action = tk.Button(footer, text="Separate into 4 stems", command=self._start, bg=COLORS["button"], fg=COLORS["button_text"], activebackground="#ffffff", activeforeground=COLORS["button_text"], disabledforeground="#667487", relief="flat", bd=0, padx=20, pady=12, font=("Segoe UI Semibold", 10), cursor="hand2")
-        self.action.grid(row=0, column=1, padx=(16, 0), sticky="e")
+    def _register_drop_zone(self, widget: tk.Widget) -> None:
+        """Register the complete CTk widget tree so every visible drop-zone surface accepts files."""
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind("<<Drop>>", self._drop_input)
+        for child in widget.winfo_children():
+            self._register_drop_zone(child)
+
+    def _drop_input(self, event) -> str:
+        paths = parse_drop_paths(event.data, self.root.tk.splitlist)
+        if paths:
+            self.controller.set_input_file(paths[0])
+        return getattr(event, "action", "copy")
 
     def _build_mixer_view(self) -> None:
         shell = self.mixer_view
         shell.grid_columnconfigure(0, weight=1)
-        shell.grid_rowconfigure(3, weight=1)
-        self._build_rail(shell)
+        shell.grid_rowconfigure(2, weight=1)
 
-        header = tk.Frame(shell, bg=COLORS["panel"])
-        header.grid(row=1, column=0, padx=24, pady=(18, 10), sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
-        self.back_button = tk.Button(header, text="‹  Split", command=lambda: self._show_view("separation"), bg=COLORS["field"], fg=COLORS["text"], activebackground=COLORS["line"], activeforeground=COLORS["text"], relief="flat", bd=0, padx=12, pady=7, font=("Segoe UI Semibold", 9), cursor="hand2")
-        self.back_button.grid(row=0, column=0, sticky="w")
-        title = tk.Frame(header, bg=COLORS["panel"])
-        title.grid(row=0, column=1, padx=18, sticky="w")
-        tk.Label(title, text="LIMBUS  /  MIXER", bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI Semibold", 9)).pack(anchor="w")
-        tk.Label(title, text="Four stems. One shared timeline.", bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI Semibold", 18)).pack(anchor="w", pady=(4, 0))
-        tk.Label(title, textvariable=self.mixer_detail, bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI", 8), wraplength=620, justify="left").pack(anchor="w", pady=(3, 0))
-        self.load_folder_button = tk.Button(header, text="Load stems folder", command=self._pick_stems_folder, bg=COLORS["field"], fg=COLORS["text"], activebackground=COLORS["line"], activeforeground=COLORS["text"], relief="flat", bd=0, padx=13, pady=8, font=("Segoe UI Semibold", 9), cursor="hand2")
-        self.load_folder_button.grid(row=0, column=2, sticky="e")
+        header = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
+        header.grid(row=0, column=0, padx=32, pady=(22, 0), sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        title_box = ctk.CTkFrame(header, fg_color="transparent")
+        title_box.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(title_box, text="Four stems. One shared timeline.", text_color=COLORS["text"], font=("Segoe UI", 18, "bold")).pack(
+            anchor="w"
+        )
+        ctk.CTkLabel(
+            title_box,
+            textvariable=self.mixer_detail,
+            text_color=COLORS["muted2"],
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=680,
+        ).pack(anchor="w", pady=(3, 0))
+        self.load_folder_button = ctk.CTkButton(
+            header,
+            text="Load stems folder",
+            command=self._pick_stems_folder,
+            fg_color="transparent",
+            hover_color=COLORS["field"],
+            border_width=1,
+            border_color=COLORS["line_strong"],
+            text_color=COLORS["text"],
+            corner_radius=8,
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.load_folder_button.grid(row=0, column=1, sticky="e")
 
-        transport = tk.Frame(shell, bg=COLORS["panel"])
-        transport.grid(row=2, column=0, padx=24, pady=(0, 12), sticky="ew")
-        transport.grid_columnconfigure(3, weight=1)
-        self.play_button = tk.Button(transport, text="Play", command=self._toggle_play, bg=COLORS["button"], fg=COLORS["button_text"], activebackground="#ffffff", activeforeground=COLORS["button_text"], disabledforeground="#667487", relief="flat", bd=0, padx=18, pady=8, font=("Segoe UI Semibold", 9), cursor="hand2")
-        self.play_button.grid(row=0, column=0, sticky="w")
-        self.export_button = tk.Button(transport, text="Exportar", command=self._open_export_dialog, bg=COLORS["field"], fg=COLORS["text"], activebackground=COLORS["line"], activeforeground=COLORS["text"], disabledforeground="#667487", relief="flat", bd=0, padx=14, pady=8, font=("Segoe UI Semibold", 9), cursor="hand2")
-        self.export_button.grid(row=0, column=1, padx=(10, 0), sticky="w")
-        self.mixer_status = tk.Label(transport, textvariable=self.mixer_headline, bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI Semibold", 9))
-        self.mixer_status.grid(row=0, column=2, padx=(16, 14), sticky="w")
-        self.timeline = tk.Canvas(transport, height=26, bg=COLORS["panel"], highlightthickness=0)
-        self.timeline.grid(row=0, column=3, sticky="ew")
+        transport = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
+        transport.grid(row=1, column=0, padx=32, pady=(20, 16), sticky="ew")
+        transport.grid_columnconfigure(2, weight=1)
+
+        self.play_button = _RoundButton(
+            transport,
+            diameter=52,
+            fg=COLORS["accent"],
+            fg_disabled=COLORS["field"],
+            icon_color=COLORS["accent_text"],
+            command=self._toggle_play,
+        )
+        self.play_button.frame.grid(row=0, column=0, sticky="w")
+
+        self.mixer_status = ctk.CTkLabel(
+            transport, textvariable=self.mixer_headline, text_color=COLORS["text"], font=("Segoe UI", 11, "bold"), anchor="w"
+        )
+        self.mixer_status.grid(row=0, column=1, padx=(14, 14), sticky="w")
+
+        self.timeline = tk.Canvas(transport, height=26, bg=COLORS["window"], highlightthickness=0)
+        self.timeline.grid(row=0, column=2, sticky="ew")
         self.timeline.bind("<Button-1>", self._seek_press)
         self.timeline.bind("<B1-Motion>", self._seek_motion)
         self.timeline.bind("<ButtonRelease-1>", self._seek_release)
-        tk.Label(transport, textvariable=self.mixer_time, bg=COLORS["panel"], fg=COLORS["muted"], font=("Consolas", 9)).grid(row=0, column=4, padx=(14, 0), sticky="e")
+        self.timeline.bind("<Configure>", lambda _event: self._draw_timeline())
 
-        lanes = tk.Frame(shell, bg=COLORS["panel"])
-        lanes.grid(row=3, column=0, padx=24, pady=(0, 20), sticky="nsew")
+        ctk.CTkLabel(
+            transport, textvariable=self.mixer_time, text_color=COLORS["muted"], font=("Consolas", 10)
+        ).grid(row=0, column=3, padx=(14, 14))
+
+        self.export_button = ctk.CTkButton(
+            transport,
+            text="Export",
+            command=self._open_export_dialog,
+            fg_color="transparent",
+            hover_color=COLORS["field"],
+            border_width=1,
+            border_color=COLORS["line_strong"],
+            text_color=COLORS["text"],
+            corner_radius=8,
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.export_button.grid(row=0, column=4, sticky="e")
+
+        lanes = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
+        lanes.grid(row=2, column=0, padx=32, pady=(0, 22), sticky="nsew")
         lanes.grid_columnconfigure(0, weight=1)
         for index, (stem_name, label, color) in enumerate(STEM_ROWS):
             lanes.grid_rowconfigure(index, weight=1, uniform="lane")
-            lane = tk.Frame(lanes, bg=COLORS["field"], highlightthickness=1, highlightbackground=COLORS["line"])
-            lane.grid(row=index, column=0, pady=(0 if index == 0 else 6, 0), sticky="nsew")
+            lane = ctk.CTkFrame(lanes, fg_color=COLORS["surface"], corner_radius=12, border_width=1, border_color=COLORS["line"])
+            lane.grid(row=index, column=0, pady=(0 if index == 0 else 10, 0), sticky="nsew")
             lane.grid_columnconfigure(1, weight=1)
             lane.grid_rowconfigure(0, weight=1)
-            controls = tk.Frame(lane, width=190, bg=COLORS["field"])
-            controls.grid(row=0, column=0, padx=(12, 8), pady=8, sticky="nsw")
+
+            controls = ctk.CTkFrame(lane, width=190, height=104, fg_color=COLORS["surface"], corner_radius=0)
+            controls.grid(row=0, column=0, padx=(4, 8), pady=10, sticky="nsw")
             controls.grid_propagate(False)
-            tk.Frame(controls, bg=color, width=4).grid(row=0, column=0, rowspan=3, sticky="ns")
-            tk.Label(controls, text=label, bg=COLORS["field"], fg=COLORS["text"], font=("Segoe UI Semibold", 9)).grid(row=0, column=1, columnspan=3, padx=(10, 0), sticky="w")
-            scale = tk.Scale(controls, from_=0, to=100, orient="horizontal", resolution=1, showvalue=False, length=112, bg=COLORS["field"], fg=COLORS["muted"], troughcolor=COLORS["line"], highlightthickness=0, bd=0, command=lambda value, name=stem_name: self._volume_changed(name, value))
+            bar = tk.Canvas(controls, width=4, height=84, bg=color, highlightthickness=0)
+            bar.grid(row=0, column=0, rowspan=3, sticky="ns", padx=(10, 0))
+            ctk.CTkLabel(controls, text=label, text_color=COLORS["text"], font=("Segoe UI", 11, "bold"), anchor="w").grid(
+                row=0, column=1, columnspan=3, padx=(10, 0), sticky="w"
+            )
+            scale = ctk.CTkSlider(
+                controls,
+                from_=0,
+                to=100,
+                width=112,
+                height=14,
+                fg_color=COLORS["line"],
+                progress_color=color,
+                button_color=COLORS["text"],
+                button_hover_color=COLORS["text"],
+                command=lambda value, name=stem_name: self._volume_changed(name, value),
+            )
             scale.set(100)
-            scale.grid(row=1, column=1, columnspan=2, padx=(10, 2), pady=(6, 0), sticky="w")
-            percent = tk.Label(controls, text="100%", width=5, anchor="e", bg=COLORS["field"], fg=COLORS["muted"], font=("Consolas", 8))
-            percent.grid(row=1, column=3, pady=(6, 0), sticky="e")
-            mute = tk.Button(controls, text="M", command=lambda name=stem_name: self._toggle_mute(name), bg=COLORS["line"], fg=COLORS["text"], activebackground=COLORS["error"], activeforeground=COLORS["text"], disabledforeground="#667487", relief="flat", bd=0, width=3, pady=2, font=("Segoe UI Semibold", 8), cursor="hand2")
-            mute.grid(row=2, column=1, padx=(10, 3), pady=(7, 0), sticky="w")
-            solo = tk.Button(controls, text="S", command=lambda name=stem_name: self._toggle_solo(name), bg=COLORS["line"], fg=COLORS["text"], activebackground=color, activeforeground=COLORS["text"], disabledforeground="#667487", relief="flat", bd=0, width=3, pady=2, font=("Segoe UI Semibold", 8), cursor="hand2")
-            solo.grid(row=2, column=2, padx=3, pady=(7, 0), sticky="w")
-            canvas = tk.Canvas(lane, height=78, bg=COLORS["field"], highlightthickness=0)
-            canvas.grid(row=0, column=1, padx=(0, 10), pady=8, sticky="nsew")
+            scale.grid(row=1, column=1, columnspan=2, padx=(10, 2), pady=(8, 0), sticky="w")
+            percent = ctk.CTkLabel(controls, text="100%", width=34, anchor="e", text_color=COLORS["muted"], font=("Consolas", 9))
+            percent.grid(row=1, column=3, pady=(8, 0), sticky="e")
+            mute = ctk.CTkButton(
+                controls,
+                text="M",
+                width=26,
+                height=22,
+                corner_radius=6,
+                fg_color=COLORS["field"],
+                hover_color=COLORS["line"],
+                text_color=COLORS["muted"],
+                text_color_disabled=COLORS["disabled"],
+                font=("Segoe UI", 9, "bold"),
+                command=lambda name=stem_name: self._toggle_mute(name),
+            )
+            mute.grid(row=2, column=1, padx=(10, 3), pady=(8, 0), sticky="w")
+            solo = ctk.CTkButton(
+                controls,
+                text="S",
+                width=26,
+                height=22,
+                corner_radius=6,
+                fg_color=COLORS["field"],
+                hover_color=COLORS["line"],
+                text_color=COLORS["muted"],
+                text_color_disabled=COLORS["disabled"],
+                font=("Segoe UI", 9, "bold"),
+                command=lambda name=stem_name: self._toggle_solo(name),
+            )
+            solo.grid(row=2, column=2, padx=3, pady=(8, 0), sticky="w")
+
+            canvas = tk.Canvas(lane, bg=COLORS["surface"], highlightthickness=0)
+            canvas.grid(row=0, column=1, padx=(0, 12), pady=10, sticky="nsew")
             canvas.bind("<Button-1>", self._seek_press)
             canvas.bind("<B1-Motion>", self._seek_motion)
             canvas.bind("<ButtonRelease-1>", self._seek_release)
@@ -301,19 +618,10 @@ class LimbusApp:
             self._waveform_canvases[stem_name] = canvas
             self._lane_widgets[stem_name] = {"scale": scale, "percent": percent, "mute": mute, "solo": solo, "color": color}
 
-    def _path_row(self, parent, row, label, variable, button_text, command):
-        tk.Label(parent, text=label, bg=COLORS["panel"], fg=COLORS["muted"], font=("Segoe UI Semibold", 8)).grid(row=row * 2, column=0, pady=(0 if row == 0 else 13, 5), sticky="w")
-        line = tk.Frame(parent, bg=COLORS["panel"])
-        line.grid(row=row * 2 + 1, column=0, sticky="ew")
-        line.grid_columnconfigure(0, weight=1)
-        entry = tk.Entry(line, textvariable=variable, state="readonly", readonlybackground=COLORS["field"], fg=COLORS["text"], relief="flat", bd=0, font=("Segoe UI", 10))
-        entry.grid(row=0, column=0, ipady=9, ipadx=10, sticky="ew")
-        button = tk.Button(line, text=button_text, command=command, bg=COLORS["field"], fg=COLORS["text"], activebackground=COLORS["line"], activeforeground=COLORS["text"], relief="flat", bd=0, padx=14, pady=8, font=("Segoe UI Semibold", 9), cursor="hand2")
-        button.grid(row=0, column=1, padx=(7, 0))
-        return button
-
     def _pick_input(self) -> None:
-        selected = filedialog.askopenfilename(parent=self.root, title="Choose input audio", filetypes=(("Audio files", "*.wav *.mp3 *.flac *.m4a *.ogg"), ("All files", "*.*")))
+        selected = filedialog.askopenfilename(
+            parent=self.root, title="Choose input audio", filetypes=(("Audio files", "*.wav *.mp3 *.flac *.m4a *.ogg"), ("All files", "*.*"))
+        )
         if selected:
             self.controller.set_input_file(selected)
 
@@ -339,99 +647,119 @@ class LimbusApp:
     def _open_export_dialog(self) -> None:
         if not self.mixer_controller.state.has_session:
             return
+        self._close_export_overlay()
 
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Exportar pistas")
-        dialog.transient(self.root)
-        dialog.configure(bg=COLORS["panel"])
-        dialog.geometry("360x320")
-        dialog.resizable(False, False)
+        overlay = ctk.CTkFrame(
+            self.workspace, fg_color=COLORS["surface"], corner_radius=16, border_width=1, border_color=COLORS["line_strong"], width=380
+        )
+        overlay.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
+        overlay.pack_propagate(False)
+        self.export_overlay = overlay
 
-        stem_vars: dict[str, tk.BooleanVar] = {
-            stem_name: tk.BooleanVar(value=True) for stem_name, _label, _color in STEM_ROWS
-        }
+        body = ctk.CTkFrame(overlay, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=22, pady=22)
+
+        head_row = ctk.CTkFrame(body, fg_color="transparent")
+        head_row.pack(fill="x")
+        ctk.CTkLabel(head_row, text="Export stems", text_color=COLORS["text"], font=("Segoe UI", 16, "bold"), anchor="w").pack(
+            side="left"
+        )
+        ctk.CTkButton(
+            head_row,
+            text="✕",
+            width=26,
+            height=26,
+            corner_radius=13,
+            fg_color="transparent",
+            hover_color=COLORS["field"],
+            text_color=COLORS["muted"],
+            command=self._close_export_overlay,
+        ).pack(side="right")
+
+        stem_vars: dict[str, tk.BooleanVar] = {stem_name: tk.BooleanVar(value=True) for stem_name, _label, _color in STEM_ROWS}
         select_all_var = tk.BooleanVar(value=True)
 
-        body = tk.Frame(dialog, bg=COLORS["panel"])
-        body.pack(fill="both", expand=True, padx=18, pady=16)
-
-        select_all = tk.Checkbutton(
+        select_all = ctk.CTkCheckBox(
             body,
-            text="Seleccionar todos",
+            text="Select all",
             variable=select_all_var,
             command=lambda: self._set_all_export_vars(stem_vars, select_all_var.get()),
-            bg=COLORS["panel"],
-            fg=COLORS["text"],
-            selectcolor=COLORS["field"],
-            activebackground=COLORS["panel"],
-            activeforeground=COLORS["text"],
-            font=("Segoe UI Semibold", 9),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent"],
+            checkmark_color=COLORS["accent_text"],
+            border_color=COLORS["line_strong"],
+            text_color=COLORS["text"],
+            corner_radius=6,
+            font=("Segoe UI", 11, "bold"),
         )
-        select_all.pack(anchor="w", pady=(0, 8))
+        select_all.pack(anchor="w", pady=(18, 10))
 
-        for stem_name, label, _color in STEM_ROWS:
-            tk.Checkbutton(
-                body,
+        checkbox_widgets: list[ctk.CTkCheckBox] = []
+        rows = ctk.CTkFrame(body, fg_color="transparent")
+        rows.pack(fill="x")
+        for stem_name, label, color in STEM_ROWS:
+            row = ctk.CTkFrame(rows, fg_color=COLORS["field"], corner_radius=10)
+            row.pack(fill="x", pady=4)
+            row_inner = ctk.CTkFrame(row, fg_color="transparent")
+            row_inner.pack(fill="x", padx=12, pady=10)
+            _icon(row_inner, STEM_ICONS[stem_name], 16, color, COLORS["field"]).pack(side="left", padx=(0, 10))
+            checkbox = ctk.CTkCheckBox(
+                row_inner,
                 text=label,
                 variable=stem_vars[stem_name],
-                bg=COLORS["panel"],
-                fg=COLORS["text"],
-                selectcolor=COLORS["field"],
-                activebackground=COLORS["panel"],
-                activeforeground=COLORS["text"],
-                font=("Segoe UI", 9),
-            ).pack(anchor="w", pady=2)
+                fg_color=COLORS["accent"],
+                hover_color=COLORS["accent"],
+                checkmark_color=COLORS["accent_text"],
+                border_color=COLORS["line_strong"],
+                text_color=COLORS["text"],
+                corner_radius=6,
+                font=("Segoe UI", 11),
+            )
+            checkbox.pack(side="left")
+            checkbox_widgets.append(checkbox)
 
-        message = tk.Label(body, text="", bg=COLORS["panel"], fg=COLORS["error"], font=("Segoe UI", 8), wraplength=320, justify="left")
-        message.pack(anchor="w", pady=(10, 0))
+        message = ctk.CTkLabel(body, text="", text_color=COLORS["error"], font=("Segoe UI", 10), anchor="w", justify="left", wraplength=320)
+        message.pack(fill="x", pady=(14, 0))
 
-        results_frame = tk.Frame(body, bg=COLORS["panel"])
-        results_frame.pack(fill="both", expand=True, pady=(4, 0))
+        results_frame = ctk.CTkFrame(body, fg_color="transparent")
+        results_frame.pack(fill="both", expand=True, pady=(6, 0))
 
-        export_button = tk.Button(
+        export_button = ctk.CTkButton(
             body,
-            text="Exportar 4 seleccionados",
-            bg=COLORS["button"],
-            fg=COLORS["button_text"],
-            activebackground="#ffffff",
-            activeforeground=COLORS["button_text"],
-            disabledforeground="#667487",
-            relief="flat",
-            bd=0,
-            padx=14,
-            pady=8,
-            font=("Segoe UI Semibold", 9),
-            cursor="hand2",
+            text="Export 4 selected",
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["accent_text"],
+            text_color_disabled=COLORS["muted2"],
+            corner_radius=10,
+            font=("Segoe UI", 12, "bold"),
+            height=42,
         )
-        export_button.pack(anchor="e", pady=(12, 0))
+        export_button.pack(fill="x", pady=(14, 0), side="bottom")
 
         def refresh_button_label(*_args) -> None:
             count = sum(1 for var in stem_vars.values() if var.get())
-            export_button.configure(
-                text=f"Exportar {count} seleccionados",
-                state="normal" if count else "disabled",
-            )
+            export_button.configure(text=f"Export {count} selected", state="normal" if count else "disabled")
 
         for var in stem_vars.values():
             var.trace_add("write", refresh_button_label)
         refresh_button_label()
 
         def start_export() -> None:
-            chosen = filedialog.askdirectory(parent=dialog, title="Elegí la carpeta destino")
+            chosen = filedialog.askdirectory(parent=self.root, title="Choose an export folder")
             if not chosen:
                 return
             selected_names = [name for name, var in stem_vars.items() if var.get()]
             ok = self.mixer_controller.export_stems(selected_names, chosen)
             if not ok:
-                message.configure(text="No se pudo exportar (sesión no disponible)")
+                message.configure(text="Export is unavailable because the mixer session has ended.")
                 return
-            message.configure(text="Exportando…")
+            message.configure(text="Exporting…")
             select_all.configure(state="disabled")
             export_button.configure(state="disabled")
-            for widget in body.winfo_children():
-                if isinstance(widget, tk.Checkbutton):
-                    widget.configure(state="disabled")
-            self.root.after(100, lambda: self._poll_export_dialog(dialog, message, results_frame, export_button))
+            for checkbox in checkbox_widgets:
+                checkbox.configure(state="disabled")
+            self.root.after(100, lambda: self._poll_export_dialog(overlay, message, results_frame, export_button))
 
         export_button.configure(command=start_export)
 
@@ -439,17 +767,17 @@ class LimbusApp:
         for var in stem_vars.values():
             var.set(value)
 
-    def _poll_export_dialog(self, dialog: tk.Toplevel, message: tk.Label, results_frame: tk.Frame, export_button: tk.Button) -> None:
-        if not dialog.winfo_exists():
+    def _poll_export_dialog(self, overlay: ctk.CTkFrame, message: ctk.CTkLabel, results_frame: ctk.CTkFrame, export_button: ctk.CTkButton) -> None:
+        if not overlay.winfo_exists():
             return
         state = self.mixer_controller.state
         if state.export_phase == "running":
-            self.root.after(100, lambda: self._poll_export_dialog(dialog, message, results_frame, export_button))
+            self.root.after(100, lambda: self._poll_export_dialog(overlay, message, results_frame, export_button))
             return
         if state.export_phase != "done":
             return
 
-        message.configure(text="Exportación finalizada")
+        message.configure(text="Export complete")
         labels = {stem_name: label for stem_name, label, _color in STEM_ROWS}
         for stem_name, path, code in state.export_results:
             display_name = labels.get(stem_name, stem_name)
@@ -457,27 +785,42 @@ class LimbusApp:
                 text = f"{display_name}: ✓ {path.name}"
             else:
                 text = f"{display_name}: ✗ {code}"
-            tk.Label(results_frame, text=text, bg=COLORS["panel"], fg=COLORS["text"], font=("Segoe UI", 9), anchor="w", justify="left").pack(anchor="w", pady=1)
+            ctk.CTkLabel(results_frame, text=text, text_color=COLORS["text"], font=("Segoe UI", 10), anchor="w", justify="left").pack(
+                anchor="w", pady=1
+            )
 
-        export_button.configure(text="Cerrar", state="normal", command=dialog.destroy)
+        export_button.configure(text="Close", state="normal", command=self._close_export_overlay)
+
+    def _close_export_overlay(self) -> None:
+        if self.export_overlay is not None and self.export_overlay.winfo_exists():
+            self.export_overlay.destroy()
+        self.export_overlay = None
 
     def _show_view(self, view: str) -> None:
         if view == "mixer":
             self.separation_view.grid_remove()
             self.mixer_view.grid(row=0, column=0, sticky="nsew")
-            self.root.geometry("1120x720")
+            self.root.geometry(f"1120x{720 + NAV_HEIGHT + 1}")
+            self.root.minsize(800, 621)
         else:
             self.mixer_view.grid_remove()
             self.separation_view.grid(row=0, column=0, sticky="nsew")
-            self.root.geometry("960x620")
+            self.root.geometry(f"960x{620 + NAV_HEIGHT + 1}")
+            self.root.minsize(800, 621)
         self._view = view
+        self._set_active_tab(view)
 
     def _render_state(self, state: GuiState) -> None:
-        self.input_value.set(state.input_file)
+        self.input_value_label.configure(text=Path(state.input_file).name if state.input_file else "No file selected")
         self.status_headline.set(state.headline)
         self.status_detail.set(state.detail)
-        marker = COLORS["error"] if state.phase == "error" else COLORS["success"] if state.phase == "success" else COLORS["muted"]
-        self.status_marker.configure(bg=marker)
+        if state.phase == "error":
+            icon_kind, icon_color = "alert", COLORS["error"]
+        elif state.phase == "success":
+            icon_kind, icon_color = "check", COLORS["success"]
+        else:
+            icon_kind, icon_color = "dot", COLORS["muted"]
+        _draw_icon(self.status_icon, icon_kind, 20, icon_color)
         running = state.phase == "running"
         self.input_button.configure(state="disabled" if running else "normal")
         self.action.configure(state="normal" if state.can_start else "disabled", text="Separating…" if running else "Separate into 4 stems")
@@ -492,8 +835,11 @@ class LimbusApp:
         self.mixer_headline.set(state.headline)
         self.mixer_detail.set(state.detail)
         self.mixer_time.set(f"{format_time(model.position_seconds)} / {format_time(model.duration_seconds)}")
-        self.play_button.configure(text="Pause" if state.playing else "Play", state="normal" if state.can_play else "disabled")
-        self.export_button.configure(state="normal" if (state.session is not None and state.phase in {"ready", "playing"}) else "disabled")
+        self.play_button.set_icon("pause" if state.playing else "play")
+        self.play_button.set_enabled(state.can_play)
+        export_ready = state.session is not None and state.phase in {"ready", "playing"}
+        self.export_button.configure(state="normal" if export_ready else "disabled")
+        self._tab_buttons["export"].configure(state="normal" if export_ready else "disabled")
         self.load_folder_button.configure(state="disabled" if state.phase == "loading" else "normal")
         self._syncing_controls = True
         try:
@@ -507,8 +853,8 @@ class LimbusApp:
                     percent = setting.gain * 100.0
                     widgets["scale"].set(percent)
                     widgets["percent"].configure(text=f"{percent:.0f}%")
-                    widgets["mute"].configure(bg=COLORS["error"] if setting.muted else COLORS["line"])
-                    widgets["solo"].configure(bg=widgets["color"] if setting.solo else COLORS["line"])
+                    widgets["mute"].configure(fg_color=COLORS["error"] if setting.muted else COLORS["field"])
+                    widgets["solo"].configure(fg_color=widgets["color"] if setting.solo else COLORS["field"])
         finally:
             self._syncing_controls = False
         if state.session is not self._waveform_session:
@@ -550,7 +896,16 @@ class LimbusApp:
             if width <= 1 or height <= 1:
                 continue
             x = max(0.0, min(float(width - 1), ratio * width))
-            canvas.create_line(x, 0, x, height, fill=COLORS["playhead"], width=2, tags="playhead")
+            canvas.create_line(x, 0, x, height, fill=COLORS["accent"], width=2, tags="playhead")
+
+    def _rounded_bar(self, canvas: tk.Canvas, x0: float, y0: float, x1: float, y1: float, radius: float, color: str) -> None:
+        if x1 <= x0:
+            return
+        radius = min(radius, (x1 - x0) / 2)
+        canvas.create_oval(x0, y0, x0 + 2 * radius, y1, fill=color, outline="")
+        canvas.create_oval(x1 - 2 * radius, y0, x1, y1, fill=color, outline="")
+        if x1 - radius > x0 + radius:
+            canvas.create_rectangle(x0 + radius, y0, x1 - radius, y1, fill=color, outline="")
 
     def _draw_timeline(self) -> None:
         self.timeline.delete("all")
@@ -558,12 +913,14 @@ class LimbusApp:
         height = self.timeline.winfo_height()
         if width <= 1:
             return
-        self.timeline.create_line(0, height - 7, width, height - 7, fill=COLORS["line"])
-        for tick in range(0, 11):
-            x = tick * width / 10
-            self.timeline.create_line(x, height - 10, x, height - 3, fill=COLORS["muted"])
-        x = max(0.0, min(float(width - 1), self._mixer_model.preview_ratio * width))
-        self.timeline.create_line(x, 2, x, height - 1, fill=COLORS["playhead"], width=2)
+        track_h = 8
+        y0, y1 = (height - track_h) / 2, (height - track_h) / 2 + track_h
+        self._rounded_bar(self.timeline, 0, y0, width, y1, track_h / 2, COLORS["field"])
+        ratio = self._mixer_model.preview_ratio
+        fill_w = max(track_h, ratio * width)
+        self._rounded_bar(self.timeline, 0, y0, fill_w, y1, track_h / 2, COLORS["accent"])
+        cx = max(8.0, min(float(width - 8), ratio * width))
+        self.timeline.create_oval(cx - 8, height / 2 - 8, cx + 8, height / 2 + 8, fill=COLORS["text"], outline=COLORS["window"], width=3)
 
     def _seek_frame_at(self, event) -> int:
         widget = event.widget
@@ -605,7 +962,7 @@ class LimbusApp:
         else:
             self.mixer_controller.play()
 
-    def _volume_changed(self, stem_name: str, value: str) -> None:
+    def _volume_changed(self, stem_name: str, value: float | str) -> None:
         percent = float(value)
         widgets = self._lane_widgets.get(stem_name)
         if widgets:
@@ -646,8 +1003,10 @@ class LimbusApp:
 
 
 def main() -> None:
-    root = tk.Tk()
-    LimbusApp(root)
+    ctk.set_appearance_mode("dark")
+    root = ctk.CTk()
+    TkinterDnD.require(root)
+    StemslayerApp(root)
     root.mainloop()
 
 

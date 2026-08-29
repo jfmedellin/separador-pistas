@@ -25,7 +25,7 @@ class GuiState:
 
 
 def _start_thread(target: Callable[[], None]) -> None:
-    threading.Thread(target=target, name="limbus-separation", daemon=True).start()
+    threading.Thread(target=target, name="stemslayer-separation", daemon=True).start()
 
 
 class SeparationController:

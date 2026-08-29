@@ -1,34 +1,31 @@
-# Limbus Split
+# Stemslayer
 
-Windows-first stem separation and auditioning for four Demucs channels: **vocals**, **drums**, **bass**, and **other**.
+Stemslayer is a Windows-first desktop app for separating one song into four Demucs stems—**vocals**, **drums**, **bass**, and **other**—then auditioning and exporting them from a synchronized local mixer.
 
-The MVP turns one audio file into four aligned WAV files, then opens a local mixer where you can inspect waveforms, play or pause, seek, adjust volume, mute, and solo stems without leaving the app.
+## Quick start
 
-## Quick path
-
-1. Use Windows PowerShell from the repository root.
+1. Open Windows PowerShell in the repository root.
 2. Create the pinned environment:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\Tools\setup_windows.ps1
    ```
 
-3. Launch the graphical interface:
+3. Launch Stemslayer:
 
    ```powershell
    .\.venv\Scripts\python.exe -m SeparationWorker.gui
    ```
 
-4. Choose an audio file and an output location, then select **Separate into 4 stems**.
-5. The mixer opens automatically after a successful separation. You can also load an existing folder containing the four required WAV files.
+4. Drag an audio file onto the Split view, or select **Browse file**.
+5. Select **Separate into 4 stems**. Stemslayer opens the mixer when the four WAV files are ready.
+6. Select **Export** to copy any finished stems to a folder you choose.
 
-If the selected result folder already contains the complete four-stem output,
-the app reopens that result without running Demucs again. To create a new
-separation, choose a different result folder.
+The GUI stores working stems in an app-managed temporary cache. Selecting the same source again can reuse a complete cached result instead of running Demucs again. You do not need to choose an output folder before separation.
 
 ## Command line
 
-The CLI writes a new result directory containing exactly `vocals.wav`, `drums.wav`, `bass.wav`, and `other.wav`:
+The CLI accepts an explicit result directory and publishes exactly `vocals.wav`, `drums.wav`, `bass.wav`, and `other.wav`:
 
 ```powershell
 .\.venv\Scripts\python.exe -m SeparationWorker.cli `
@@ -42,25 +39,27 @@ The CLI writes a new result directory containing exactly `vocals.wav`, `drums.wa
 | --- | --- |
 | Play / Pause | Starts or pauses all four stems on one shared timeline. |
 | Timeline | Click or drag to preview and seek to a frame. |
-| Volume | Attenuation from 0% through 100%; positive boost is not exposed. |
-| M | Mute the selected stem. Mute takes priority over Solo. |
-| S | Solo a stem; multiple stems can be soloed together. |
+| Volume | Attenuates one stem from 100% to 0%; positive boost is not exposed. |
+| M | Mutes the selected stem. Mute takes priority over Solo. |
+| S | Solos a stem; multiple stems can be soloed together. |
+| Export | Copies the selected stems to a destination folder. |
 
-Playback uses one Windows audio stream and four synchronized readers so stems cannot drift apart. Waveform peak envelopes are calculated in the background and bounded to 2,000 bins, keeping long songs responsive.
+You can also select **Load stems folder** to open an existing folder containing all four required WAV files. Playback uses one Windows audio stream and four synchronized readers so the stems cannot drift apart. Waveform peak envelopes are calculated in the background and bounded to 2,000 bins to keep long songs responsive.
 
 ## Architecture
 
 ```text
 SeparationWorker/
-├── cli.py                    # Command-line entry point
-├── gui.py                    # Tkinter Separation and Mixer views
-├── gui_controller.py         # Background separation workflow
-├── mixer_controller.py       # Async mixer state and command boundary
-└── engine/
-    ├── demucs_adapter.py     # Demucs execution and diagnostics
-    ├── stem_session.py       # Four-stem validation and waveform peaks
-    ├── playback.py           # Shared-cursor Windows playback
-    └── mixer.py              # Immutable gain, Mute, Solo semantics
+|-- cli.py                    # Command-line entry point
+|-- gui.py                    # Split and Mixer views
+|-- gui_controller.py         # Background separation workflow
+|-- mixer_controller.py       # Async mixer state and command boundary
+`-- engine/
+    |-- demucs_adapter.py     # Demucs execution and diagnostics
+    |-- stem_cache.py         # App-managed temporary stem workspace
+    |-- stem_session.py       # Four-stem validation and waveform peaks
+    |-- playback.py           # Shared-cursor Windows playback
+    `-- mixer.py              # Immutable gain, Mute, and Solo semantics
 ```
 
 The GUI never performs Demucs inference, WAV analysis, or native audio writes on the Tkinter event thread. Playback failures release all readers and the output stream, then surface an actionable message.
@@ -74,17 +73,17 @@ Run the portable suite with the project environment:
 .\.venv\Scripts\python.exe -m compileall -q SeparationWorker Tests\Portable
 ```
 
-The tests cover publication safety, Demucs diagnostics, four-stem metadata validation, synchronized playback with fake devices, controller threading, and headless mixer view state.
+The tests cover publication safety, Demucs diagnostics, cache lifecycle, four-stem metadata validation, synchronized playback with fake devices, controller threading, drag-and-drop payload parsing, and headless mixer view state.
 
 ## MVP boundaries
 
-This release intentionally excludes macOS support, panning, mixed-WAV export, looping, waveform zoom, output-device selection, and persisted mixer settings. Demucs uses `htdemucs`; CUDA is selected when available and the complete separation retries once on CPU when the CUDA run fails.
+This release intentionally excludes macOS support, panning, mixed-WAV export, looping, waveform zoom, output-device selection, and persisted mixer settings. Demucs uses `htdemucs`; CUDA is selected when available, and the complete separation retries once on CPU when the CUDA run fails.
 
 ## Requirements
 
-- Windows 10/11
+- Windows 10 or 11
 - Python available as `python.exe`
 - NVIDIA CUDA-capable GPU recommended for practical separation speed
 - A Windows output device for mixer playback
 
-`Tools/setup_windows.ps1` installs PyTorch 2.13.0 with CUDA 13.0 support, Demucs 4.1.0, SoundFile 0.13.1, and SoundDevice 0.5.6 into `.venv`.
+`Tools/setup_windows.ps1` installs the pinned PyTorch, Demucs, SoundFile, SoundDevice, CustomTkinter, and tkinterdnd2 dependencies into `.venv`.

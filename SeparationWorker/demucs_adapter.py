@@ -174,7 +174,7 @@ def separate_audio(
         return output_directory
     output_directory.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="limbus-demucs-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="stemslayer-demucs-") as temporary:
         staging = Path(temporary) / "demucs"
         staging.mkdir()
         device = "cuda" if cuda_probe() else "cpu"

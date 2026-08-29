@@ -43,4 +43,8 @@ Invoke-SetupStep "Installing the Windows MVP audio dependencies..." {
     & $venvPython -m pip install demucs==4.1.0 soundfile==0.13.1 sounddevice==0.5.6
 }
 
+Invoke-SetupStep "Installing the GUI dependencies..." {
+    & $venvPython -m pip install customtkinter==6.0.0 tkinterdnd2==0.6.2
+}
+
 Write-Host "Windows MVP environment is ready: $venvPython"
