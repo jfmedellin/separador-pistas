@@ -16,7 +16,14 @@ import numpy as np
 import soundfile as sf
 
 from SeparationWorker.engine.publication import publish_atomic
-from SeparationWorker.engine.role_metrics import RoleThresholds, is_absent, is_audible, reconstructs
+from SeparationWorker.engine.role_metrics import (
+    DETERMINISTIC_ROLE_THRESHOLDS,
+    RoleThresholds,
+    is_absent,
+    is_audible,
+    reconstructs,
+)
+from SeparationWorker.engine.stereo_split import SPLITTER_ID, split_center_sides
 from SeparationWorker.engine.stem_profile import (
     LEGACY_PROFILE,
     MANIFEST_NAME,
@@ -37,6 +44,11 @@ DIAGNOSTIC_MAX_CHARACTERS = 800
 # Callable receiving the isolated specialist input WAV and a staging directory,
 # and writing one WAV per role lane into it.
 SpecialistRunner = Callable[[Path, Path], None]
+
+# Deterministic in-process splitters. These need no admission: there are no
+# weights, no license, and no download, and their output is a property of the
+# arithmetic. Each returns one array per role lane, in the profile's lane order.
+SPLITTERS = {SPLITTER_ID: split_center_sides}
 
 
 @dataclass(eq=False)
@@ -238,6 +250,29 @@ def _fold(paths: Sequence[Path]) -> bytes:
     return _encode_audio(total, rate, subtype)
 
 
+def _split_roles(profile: StemProfile, source: Path, staging: Path) -> dict[str, Path]:
+    """Split one isolated stem into its role lanes with a registered splitter."""
+    lanes = tuple(lane for lane in profile.lanes if lane.role_group)
+    samples, rate, subtype = _read_audio(source)
+    try:
+        produced = SPLITTERS[profile.splitter_id](samples)
+    except Exception as exc:
+        raise DemucsSeparationError(
+            "splitter.failed",
+            f"The {profile.splitter_id} splitter could not process {source.name}: {exc}.",
+            "Discard the result and retry the complete song.",
+        ) from exc
+    if len(produced) != len(lanes):
+        raise DemucsSeparationError(
+            "splitter.lane_mismatch",
+            f"The {profile.splitter_id} splitter produced {len(produced)} parts for {len(lanes)} lanes.",
+            "Register a splitter whose output matches the profile's role lanes.",
+        )
+    for lane, data in zip(lanes, produced):
+        sf.write(str(staging / lane.file_name), data, rate, subtype=subtype)
+    return {lane.lane_id: staging / lane.file_name for lane in lanes}
+
+
 def _role_group(profile: StemProfile) -> str:
     return next(lane.role_group for lane in profile.lanes if lane.role_group)
 
@@ -370,6 +405,16 @@ def separate_audio(
                 f"The {profile.display_name} profile has no calibrated role thresholds.",
                 "Calibrate reconstruction, audibility, and absence limits before enabling this profile.",
             )
+    if profile.split_input is not None:
+        if profile.splitter_id not in SPLITTERS:
+            raise DemucsSeparationError(
+                "profile.splitter_unregistered",
+                f"No splitter is registered under {profile.splitter_id!r}.",
+                "Register the splitter this profile names, or choose another profile.",
+            )
+        # A deterministic split has nothing a corpus could calibrate, so it
+        # carries its own limits rather than blocking on trained-model evidence.
+        thresholds = thresholds or DETERMINISTIC_ROLE_THRESHOLDS
     audio_file = Path(audio_file).resolve()
     output_directory = Path(output_directory).resolve()
     if not audio_file.is_file():
@@ -436,6 +481,15 @@ def separate_audio(
             }
             absent_lanes = _validate_roles(
                 profile, raw_paths[profile.specialist_input], role_paths, thresholds
+            )
+        elif profile.split_input is not None:
+            roles = Path(temporary) / "roles"
+            roles.mkdir()
+            role_paths = _split_roles(profile, raw_paths[profile.split_input], roles)
+            # The split runs through the same gates a trained specialist would
+            # face, so there is one validation path rather than a shortcut.
+            absent_lanes = _validate_roles(
+                profile, raw_paths[profile.split_input], role_paths, thresholds
             )
 
         files = _assemble_lanes(profile, raw_paths, role_paths)

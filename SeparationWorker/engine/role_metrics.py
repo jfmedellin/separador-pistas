@@ -51,6 +51,20 @@ class RoleThresholds:
         return cls.from_payload(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+# A deterministic split has no weights and no learned behaviour, so there is
+# nothing a rights-cleared corpus could calibrate about it: its reconstruction
+# is a property of the arithmetic, not of training. Absence and audibility
+# still need limits, and these are the same ones the trained path targets.
+DETERMINISTIC_ROLE_THRESHOLDS = RoleThresholds(
+    calibrated=True,
+    reconstruction_minimum_db=60.0,
+    leakage_maximum_db=0.0,
+    audibility_minimum_dbfs=-40.0,
+    absence_at_or_below_dbfs=-80.0,
+    calibration_blocker="",
+)
+
+
 def peak_dbfs(samples) -> float:
     """Return the peak level in dBFS, or negative infinity for digital silence."""
     samples = np.asarray(samples, dtype=np.float64)

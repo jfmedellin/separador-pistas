@@ -7,6 +7,8 @@ from SeparationWorker.engine.stem_profile import (
     MANIFEST_SCHEMA_VERSION,
     METAL_PROFILE,
     METAL_PROFILE_ID,
+    METAL_STEREO_PROFILE,
+    METAL_STEREO_PROFILE_ID,
     PROFILES,
     StemLane,
     StemProfile,
@@ -86,6 +88,56 @@ class MetalProfileTests(unittest.TestCase):
         self.assertTrue(admitted_metal().enabled)
 
 
+class MetalStereoProfileTests(unittest.TestCase):
+    def test_it_publishes_six_ordered_lanes_split_by_position(self):
+        self.assertEqual(
+            ("vocals", "drums", "bass", "guitar_center", "guitar_sides", "other"),
+            METAL_STEREO_PROFILE.lane_ids,
+        )
+
+    def test_its_lanes_are_named_for_position_never_for_a_role(self):
+        """The honest boundary, pinned as a test.
+
+        Stereo position is not a musical role, so these lanes must never be
+        labelled Lead or Rhythm no matter how often the two coincide.
+        """
+        labels = tuple(lane.display_name for lane in METAL_STEREO_PROFILE.lanes)
+
+        self.assertIn("Guitar Center", labels)
+        self.assertIn("Guitar Sides", labels)
+        self.assertNotIn("Lead Guitar", labels)
+        self.assertNotIn("Rhythm Guitar", labels)
+
+    def test_it_runs_without_admitting_anything(self):
+        self.assertTrue(METAL_STEREO_PROFILE.enabled)
+        self.assertIsNone(METAL_STEREO_PROFILE.specialist_input)
+        self.assertIsNone(METAL_STEREO_PROFILE.specialist_id)
+        self.assertEqual("guitar", METAL_STEREO_PROFILE.split_input)
+        self.assertTrue(METAL_STEREO_PROFILE.splitter_id)
+
+    def test_combined_guitar_never_coexists_with_its_parts(self):
+        self.assertIn("guitar", METAL_STEREO_PROFILE.raw_outputs)
+        self.assertNotIn("guitar", METAL_STEREO_PROFILE.lane_ids)
+
+    def test_both_position_lanes_may_publish_as_silence(self):
+        parts = METAL_STEREO_PROFILE.role_lanes("guitar")
+
+        self.assertEqual(("guitar_center", "guitar_sides"), tuple(lane.lane_id for lane in parts))
+        self.assertTrue(all(lane.absentable for lane in parts))
+
+    def test_it_never_shares_a_pipeline_identity_with_the_role_profile(self):
+        self.assertNotEqual(
+            METAL_STEREO_PROFILE.pipeline_fingerprint, METAL_PROFILE.pipeline_fingerprint
+        )
+
+    def test_changing_the_splitter_changes_the_pipeline_identity(self):
+        revised = replace(METAL_STEREO_PROFILE, splitter_id="center-sides-v2")
+
+        self.assertNotEqual(
+            METAL_STEREO_PROFILE.pipeline_fingerprint, revised.pipeline_fingerprint
+        )
+
+
 class ProfileValidationTests(unittest.TestCase):
     def build(self, **overrides):
         defaults = {
@@ -141,6 +193,29 @@ class ProfileValidationTests(unittest.TestCase):
 
         self.assertEqual("profile.unknown_specialist_input", caught.exception.code)
 
+    def test_split_input_the_model_never_emits_is_rejected(self):
+        with self.assertRaises(StemProfileError) as caught:
+            self.build(split_input="guitar", splitter_id="center-sides-v1")
+
+        self.assertEqual("profile.unknown_split_input", caught.exception.code)
+
+    def test_a_split_input_without_a_splitter_is_rejected(self):
+        with self.assertRaises(StemProfileError) as caught:
+            self.build(split_input="vocals")
+
+        self.assertEqual("profile.missing_splitter", caught.exception.code)
+
+    def test_declaring_both_a_specialist_and_a_splitter_is_rejected(self):
+        with self.assertRaises(StemProfileError) as caught:
+            self.build(
+                specialist_input="vocals",
+                specialist_id="some-model",
+                split_input="vocals",
+                splitter_id="center-sides-v1",
+            )
+
+        self.assertEqual("profile.conflicting_decomposition", caught.exception.code)
+
 
 class FingerprintTests(unittest.TestCase):
     def test_fingerprint_is_stable_for_the_same_profile(self):
@@ -163,7 +238,10 @@ class ProfileRegistryTests(unittest.TestCase):
     def test_registered_profiles_resolve_by_identifier(self):
         self.assertIs(LEGACY_PROFILE, resolve_profile(LEGACY_PROFILE_ID))
         self.assertIs(METAL_PROFILE, resolve_profile(METAL_PROFILE_ID))
-        self.assertEqual({LEGACY_PROFILE_ID, METAL_PROFILE_ID}, set(PROFILES))
+        self.assertIs(METAL_STEREO_PROFILE, resolve_profile(METAL_STEREO_PROFILE_ID))
+        self.assertEqual(
+            {LEGACY_PROFILE_ID, METAL_STEREO_PROFILE_ID, METAL_PROFILE_ID}, set(PROFILES)
+        )
 
     def test_unknown_profile_is_rejected_actionably(self):
         with self.assertRaises(StemProfileError) as caught:

@@ -200,21 +200,22 @@ class ProfileSelectorTests(GuiAppFixture, unittest.TestCase):
         offered = set(self.app.profile_selector.cget("values"))
 
         self.assertIn("Legacy", offered)
-        self.assertIn("Metal", offered)
+        self.assertIn("Metal Roles", offered)
+        self.assertIn("Metal Stereo", offered)
 
     def test_the_selector_starts_on_the_available_profile(self):
         self.assertEqual("Legacy", self.app.profile_selector.get())
         self.assertEqual(4, len(self.app._chip_lane_ids))
 
     def test_selecting_metal_shows_the_remediation_and_blocks_starting(self):
-        self.app._profile_selected("Metal")
+        self.app._profile_selected("Metal Roles")
 
         self.assertEqual(METAL_PROFILE_ID, self.app.controller.state.profile_id)
         self.assertIn("admit_metal_guitar_model.py", self.app.status_detail.get())
         self.assertEqual("disabled", str(self.app.action.cget("state")))
 
     def test_selecting_metal_previews_its_six_channels(self):
-        self.app._profile_selected("Metal")
+        self.app._profile_selected("Metal Roles")
 
         self.assertEqual(
             ("vocals", "drums", "bass", "lead_guitar", "rhythm_guitar", "other"),
@@ -222,11 +223,32 @@ class ProfileSelectorTests(GuiAppFixture, unittest.TestCase):
         )
 
     def test_switching_back_restores_the_legacy_preview(self):
-        self.app._profile_selected("Metal")
+        self.app._profile_selected("Metal Roles")
         self.app._profile_selected("Legacy")
 
         self.assertEqual(("vocals", "drums", "bass", "other"), self.app._chip_lane_ids)
         self.assertEqual("Legacy", self.app.profile_selector.get())
+
+    def test_metal_stereo_can_start_and_states_that_position_is_not_role(self):
+        self.app.controller.set_input_file("song.mp3")
+
+        self.app._profile_selected("Metal Stereo")
+
+        self.assertTrue(self.app.controller.state.profile_available)
+        self.assertEqual("normal", str(self.app.action.cget("state")))
+        detail = self.app.status_detail.get()
+        self.assertIn("position is not role", detail)
+        self.assertIn("centre", detail)
+
+    def test_metal_stereo_previews_position_lanes_never_roles(self):
+        self.app._profile_selected("Metal Stereo")
+
+        self.assertEqual(
+            ("vocals", "drums", "bass", "guitar_center", "guitar_sides", "other"),
+            self.app._chip_lane_ids,
+        )
+        labels = [row[1] for row in self.app._mixer_model.lane_rows]
+        self.assertNotIn("LEAD GUITAR", labels)
 
     def test_an_unknown_selection_is_ignored(self):
         self.app._profile_selected("Nonexistent")
@@ -237,13 +259,13 @@ class ProfileSelectorTests(GuiAppFixture, unittest.TestCase):
         self.assertIn("Four clean channels", self.app.hero_headline.get())
         self.assertIn("four clean local stems", self.app.hero_subtitle.get())
 
-        self.app._profile_selected("Metal")
+        self.app._profile_selected("Metal Roles")
 
         self.assertIn("Six clean channels", self.app.hero_headline.get())
         self.assertIn("six clean local stems", self.app.hero_subtitle.get())
 
     def test_the_start_button_reports_the_selected_channel_count(self):
-        self.app._profile_selected("Metal")
+        self.app._profile_selected("Metal Roles")
 
         self.assertEqual("Separate into 6 stems", self.app.action.cget("text"))
 
