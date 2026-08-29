@@ -90,7 +90,7 @@ python -m venv .venv-portable
 .\.venv-portable\Scripts\python.exe -m pip install --upgrade pip
 .\.venv-portable\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
 .\.venv-portable\Scripts\python.exe -m pip install -r .\Tools\requirements-portable.txt
-.\Tools\build_portable.ps1 -Version 1.1.1 -Variant cpu -PythonPath (Resolve-Path .\.venv-portable\Scripts\python.exe)
+.\Tools\build_portable.ps1 -Version 1.1.2 -Variant cpu -PythonPath (Resolve-Path .\.venv-portable\Scripts\python.exe)
 ```
 
 For the NVIDIA CUDA variant, install PyTorch from the CUDA 13.0 index instead and select the CUDA build contract:
@@ -100,7 +100,7 @@ python -m venv .venv-portable-cuda
 .\.venv-portable-cuda\Scripts\python.exe -m pip install --upgrade pip
 .\.venv-portable-cuda\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
 .\.venv-portable-cuda\Scripts\python.exe -m pip install -r .\Tools\requirements-portable.txt
-.\Tools\build_portable.ps1 -Version 1.1.1 -Variant cuda -PythonPath (Resolve-Path .\.venv-portable-cuda\Scripts\python.exe)
+.\Tools\build_portable.ps1 -Version 1.1.2 -Variant cuda -PythonPath (Resolve-Path .\.venv-portable-cuda\Scripts\python.exe)
 ```
 
 The script rejects a PyTorch runtime that does not match the requested variant, cleans `build/` and `dist/`, builds the one-folder GUI and worker, runs frozen entrypoint smoke tests, creates the variant-specific ZIP, and writes the matching `.sha256` file. Both ZIPs deliberately exclude model weights; `htdemucs` is acquired on first use.
