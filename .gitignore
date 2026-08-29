@@ -1,5 +1,6 @@
 .atl/
 .venv/
+.venv-portable/
 __pycache__/
 *.py[cod]
 .codegraph/

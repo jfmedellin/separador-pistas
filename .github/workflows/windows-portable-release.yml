@@ -1,0 +1,57 @@
+name: Windows portable release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Python x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          architecture: x64
+
+      - name: Create the CPU-only build environment
+        shell: pwsh
+        run: |
+          python -m venv .venv-portable
+          $python = (Resolve-Path ".\.venv-portable\Scripts\python.exe").Path
+          & $python -m pip install --upgrade pip
+          & $python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+          & $python -m pip install -r Tools\requirements-portable.txt
+
+      - name: Run the portable test suite
+        shell: pwsh
+        run: |
+          $python = (Resolve-Path ".\.venv-portable\Scripts\python.exe").Path
+          & $python -m unittest discover -s Tests\Portable -v
+          & $python -m compileall -q SeparationWorker Tests\Portable
+
+      - name: Build and smoke-test the portable bundle
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $python = (Resolve-Path ".\.venv-portable\Scripts\python.exe").Path
+          .\Tools\build_portable.ps1 -Version $version -PythonPath $python
+
+      - name: Publish ZIP and SHA-256 checksum
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag.Substring(1)
+          $zip = "dist\Stemslayer-v$version-windows-x64-portable.zip"
+          $checksum = "$zip.sha256"
+          gh release create $tag $zip $checksum --repo $env:GITHUB_REPOSITORY --verify-tag --title "Stemslayer $tag" --generate-notes

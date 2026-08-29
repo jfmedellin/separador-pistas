@@ -16,6 +16,7 @@ from SeparationWorker.engine.stem_session import STEM_NAMES
 
 
 MODEL_NAME = "htdemucs"
+WORKER_EXECUTABLE = "StemslayerWorker.exe"
 DIAGNOSTIC_MAX_LINES = 6
 DIAGNOSTIC_MAX_CHARACTERS = 800
 
@@ -46,11 +47,26 @@ def _require_demucs_41() -> None:
     try:
         version = importlib.metadata.version("demucs")
     except importlib.metadata.PackageNotFoundError as exc:
-        raise DemucsSeparationError(
-            "demucs.not_installed",
-            "Demucs is not installed in the active Python environment.",
-            "Install the Windows MVP dependencies in its isolated environment and retry.",
-        ) from exc
+        if getattr(sys, "frozen", False):
+            # PyInstaller bundles the package code, but metadata is optional.
+            # The release spec still copies metadata; this fallback keeps the
+            # frozen runtime useful with bootloaders that omit dist-info.
+            try:
+                import demucs
+
+                version = demucs.__version__
+            except (ImportError, AttributeError) as fallback_error:
+                raise DemucsSeparationError(
+                    "demucs.not_installed",
+                    "The bundled Demucs runtime is not available.",
+                    "Re-download the complete Stemslayer portable bundle and retry.",
+                ) from fallback_error
+        else:
+            raise DemucsSeparationError(
+                "demucs.not_installed",
+                "Demucs is not installed in the active Python environment.",
+                "Install the Windows MVP dependencies in its isolated environment and retry.",
+            ) from exc
     if version.split(".")[:2] != ["4", "1"]:
         raise DemucsSeparationError(
             "demucs.version_mismatch",
@@ -61,15 +77,38 @@ def _require_demucs_41() -> None:
 
 def run_demucs(command: Sequence[str]) -> None:
     _require_demucs_41()
+    options = {
+        "check": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        # The worker is a console executable so Demucs can be captured, but
+        # it must not flash a console window over the GUI.
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if creationflags:
+            options["creationflags"] = creationflags
     subprocess.run(
         list(command),
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        **options,
     )
+
+
+def frozen_worker_path() -> Path:
+    """Return the worker beside the GUI executable in a frozen bundle."""
+    if not getattr(sys, "frozen", False):
+        raise RuntimeError("The frozen worker path is only available in a bundled runtime.")
+    worker = Path(sys.executable).resolve().with_name(WORKER_EXECUTABLE)
+    if not worker.is_file():
+        raise DemucsSeparationError(
+            "demucs.worker_missing",
+            f"The bundled Demucs worker is missing: {worker}",
+            "Extract the complete Stemslayer portable folder and retry.",
+        )
+    return worker
 
 
 def _diagnostic_tail(error: subprocess.CalledProcessError) -> str | None:
@@ -100,10 +139,14 @@ def _failure_cause(device: str, error: subprocess.CalledProcessError) -> str:
 
 
 def _command(audio_file: Path, staging: Path, device: str) -> list[str]:
+    executable = sys.executable
+    if getattr(sys, "frozen", False):
+        executable = str(frozen_worker_path())
+        command = [executable]
+    else:
+        command = [executable, "-m", "demucs.separate"]
     return [
-        sys.executable,
-        "-m",
-        "demucs.separate",
+        *command,
         "--name",
         MODEL_NAME,
         "--device",

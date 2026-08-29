@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import tkinter as tk
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tkinter import filedialog
@@ -13,6 +14,7 @@ from tkinter import filedialog
 import customtkinter as ctk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
+from SeparationWorker.demucs_adapter import frozen_worker_path
 from SeparationWorker.engine import stem_cache
 from SeparationWorker.engine.mixer import MixerSnapshot
 from SeparationWorker.engine.stem_session import STEM_NAMES
@@ -1002,13 +1004,21 @@ class StemslayerApp:
         self.root.after(50, self._drain_events)
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == ["--self-test"]:
+        if getattr(sys, "frozen", False):
+            frozen_worker_path()
+        return 0
+    if arguments:
+        raise ValueError(f"Unsupported arguments: {' '.join(arguments)}")
     ctk.set_appearance_mode("dark")
     root = ctk.CTk()
     TkinterDnD.require(root)
     StemslayerApp(root)
     root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

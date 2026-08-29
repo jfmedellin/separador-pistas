@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from SeparationWorker.engine.mixer import MixSetting, MixerSnapshot
-from SeparationWorker.gui import APP_NAME, MixerViewModel, parse_drop_paths
+from SeparationWorker.gui import APP_NAME, MixerViewModel, main, parse_drop_paths
 from SeparationWorker.mixer_controller import MixerState
 
 
@@ -64,6 +64,11 @@ class MixerViewModelTests(unittest.TestCase):
         self.assertEqual(25, preview.position)
         self.assertEqual(100, preview.frame_count)
         self.assertEqual(0.76, preview.preview_ratio)
+
+
+class GuiEntrypointTests(unittest.TestCase):
+    def test_self_test_does_not_create_a_window(self):
+        self.assertEqual(0, main(["--self-test"]))
 
 
 class DropPathParsingTests(unittest.TestCase):

@@ -8,7 +8,9 @@ from unittest.mock import patch
 from SeparationWorker.demucs_adapter import (
     MODEL_NAME,
     STEM_NAMES,
+    WORKER_EXECUTABLE,
     DemucsSeparationError,
+    _command,
     run_demucs,
     separate_audio,
 )
@@ -60,6 +62,37 @@ class DemucsAdapterTests(unittest.TestCase):
             encoding="utf-8",
             errors="replace",
         )
+
+    def test_development_command_runs_demucs_as_a_python_module(self):
+        with patch("SeparationWorker.demucs_adapter.sys.frozen", False, create=True):
+            command = _command(Path("song.mp3"), Path("staging"), "cpu")
+
+        self.assertEqual([sys.executable, "-m", "demucs.separate"], command[:3])
+
+    def test_frozen_command_runs_the_sibling_worker_executable(self):
+        with tempfile.TemporaryDirectory() as root:
+            gui = Path(root) / "Stemslayer.exe"
+            worker = Path(root) / WORKER_EXECUTABLE
+            gui.write_bytes(b"gui")
+            worker.write_bytes(b"worker")
+            with patch("SeparationWorker.demucs_adapter.sys.executable", str(gui)):
+                with patch("SeparationWorker.demucs_adapter.sys.frozen", True, create=True):
+                    command = _command(Path("song.mp3"), Path("staging"), "cpu")
+
+        self.assertEqual(str(worker), command[0])
+        self.assertEqual(MODEL_NAME, command[command.index("--name") + 1])
+        self.assertEqual("cpu", command[command.index("--device") + 1])
+
+    def test_frozen_command_fails_actionably_when_worker_is_missing(self):
+        with tempfile.TemporaryDirectory() as root:
+            gui = Path(root) / "Stemslayer.exe"
+            gui.write_bytes(b"gui")
+            with patch("SeparationWorker.demucs_adapter.sys.executable", str(gui)):
+                with patch("SeparationWorker.demucs_adapter.sys.frozen", True, create=True):
+                    with self.assertRaises(DemucsSeparationError) as caught:
+                        _command(Path("song.mp3"), Path("staging"), "cpu")
+
+        self.assertEqual("demucs.worker_missing", caught.exception.code)
 
     def test_cuda_run_uses_htdemucs_and_atomically_publishes_exact_stems(self):
         with tempfile.TemporaryDirectory() as root:
