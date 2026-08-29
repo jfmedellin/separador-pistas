@@ -131,6 +131,23 @@ def _read_stems(staging: Path, audio_file: Path) -> dict[str, bytes]:
     return {name: (source / name).read_bytes() for name in STEM_NAMES}
 
 
+def _is_complete_existing_result(output_directory: Path) -> bool:
+    """Recognize a previously published four-stem result without mutating it."""
+    try:
+        if not output_directory.is_dir() or output_directory.is_symlink():
+            return False
+        entries = tuple(output_directory.iterdir())
+        return (
+            {entry.name for entry in entries} == set(STEM_NAMES)
+            and all(
+                entry.is_file() and not entry.is_symlink() and entry.stat().st_size > 0
+                for entry in entries
+            )
+        )
+    except OSError:
+        return False
+
+
 def separate_audio(
     audio_file: str | Path,
     output_directory: str | Path,
@@ -153,6 +170,8 @@ def separate_audio(
             "The output directory must have a directory name.",
             "Choose a named output directory and retry.",
         )
+    if _is_complete_existing_result(output_directory):
+        return output_directory
     output_directory.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="limbus-demucs-") as temporary:

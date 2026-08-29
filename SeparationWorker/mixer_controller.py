@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -25,6 +26,7 @@ class MixerState:
 
     folder: Path | None = None
     session: object | None = None
+    title: str = ""
     phase: str = "idle"
     headline: str = "Choose a four-stem folder"
     detail: str = "Load vocals.wav, drums.wav, bass.wav, and other.wav to begin."
@@ -33,6 +35,8 @@ class MixerState:
     playing: bool = False
     settings: MixerSnapshot = _DEFAULT_SETTINGS
     error_code: str | None = None
+    export_phase: str = "idle"
+    export_results: tuple[tuple[str, Path | None, str | None], ...] = ()
 
     @property
     def duration_frames(self) -> int:
@@ -75,6 +79,31 @@ def _error_parts(error: Exception) -> tuple[str, str, str | None]:
     code = getattr(error, "code", None)
     detail = f"{cause} {recovery}".strip()
     return detail, recovery, str(code) if code is not None else None
+
+
+_EXPORT_COLLISION_BOUND = 999
+
+
+def _export_target(destination: Path, title: str, stem_name: str) -> Path:
+    """Return the first free ``{title}-{stem}.wav`` name under destination.
+
+    Collisions are resolved with a `` (2)``, `` (3)``, ... suffix, bounded at
+    ``_EXPORT_COLLISION_BOUND`` attempts. The bound is a defensive ceiling,
+    not an error path: exhausting it simply returns the last candidate,
+    leaving the actual race-safe conflict detection to the exclusive file
+    open performed by the caller.
+    """
+    destination = Path(destination)
+    stem = Path(stem_name).stem
+    base = f"{title}-{stem}" if title else stem
+    candidate = destination / f"{base}.wav"
+    if not candidate.exists():
+        return candidate
+    for attempt in range(2, _EXPORT_COLLISION_BOUND + 1):
+        candidate = destination / f"{base} ({attempt}).wav"
+        if not candidate.exists():
+            return candidate
+    return candidate
 
 
 class MixerController:
@@ -126,11 +155,13 @@ class MixerController:
                 return None
             return self._engine
 
-    def load(self, folder: str | Path) -> bool:
+    def load(self, folder: str | Path, *, title: str = "") -> bool:
         """Load a complete stem folder asynchronously."""
         try:
             folder = Path(folder)
         except (TypeError, ValueError):
+            return False
+        if not isinstance(title, str):
             return False
 
         with self._lock:
@@ -144,19 +175,20 @@ class MixerController:
         self._set_state(
             MixerState(
                 folder=folder,
+                title=title,
                 phase="loading",
                 headline="Loading 4 stems",
                 detail="Validating the WAV files and preparing waveforms.",
             )
         )
-        self._start_worker(lambda: self._load_worker(generation, folder, previous))
+        self._start_worker(lambda: self._load_worker(generation, folder, previous, title))
         return True
 
-    def replace(self, folder: str | Path) -> bool:
+    def replace(self, folder: str | Path, *, title: str = "") -> bool:
         """Replace the current folder through the same stale-safe load path."""
-        return self.load(folder)
+        return self.load(folder, title=title)
 
-    def _load_worker(self, generation: int, folder: Path, previous) -> None:
+    def _load_worker(self, generation: int, folder: Path, previous, title: str) -> None:
         self._close_engine(previous)
         try:
             session = self._load_session(folder)
@@ -181,11 +213,11 @@ class MixerController:
             self._close_engine(engine)
             return
         try:
-            self._dispatch(lambda: self._finish_loaded(generation, folder, session, engine))
+            self._dispatch(lambda: self._finish_loaded(generation, folder, session, engine, title))
         except Exception:
             self._close_engine(engine)
 
-    def _finish_loaded(self, generation: int, folder: Path, session, engine) -> None:
+    def _finish_loaded(self, generation: int, folder: Path, session, engine, title: str) -> None:
         if not self._is_current(generation):
             self._close_engine(engine)
             return
@@ -205,6 +237,7 @@ class MixerController:
             MixerState(
                 folder=loaded_folder,
                 session=session,
+                title=title,
                 phase="ready",
                 headline="4 stems are ready",
                 detail=str(loaded_folder),
@@ -308,6 +341,96 @@ class MixerController:
         except Exception:
             return False
         return True
+
+    def _copy_stem(self, stem_name: str, destination: Path) -> tuple[Path | None, str | None]:
+        """Copy one raw published stem into an already-validated destination.
+
+        Callers are expected to have already checked the command gate, the
+        stem name, and that ``destination`` is a directory. This is a plain
+        ``shutil.copy2`` of the published stem file: never a move, never
+        gain/mute/solo-adjusted, never re-encoded.
+        """
+        index = self._stem_index(stem_name)
+        source = self.state.session.paths[index]
+        target = _export_target(destination, self.state.title, stem_name)
+        try:
+            with open(target, "xb"):
+                pass
+            shutil.copy2(source, target)
+        except OSError:
+            return None, "export.failed"
+        return target, None
+
+    def export_stem(self, stem_name: str, destination: str | Path) -> Path | None:
+        """Copy one raw published stem to a destination folder.
+
+        Returns the written path on success. Returns None both for a gate
+        refusal (no session, closed, unknown stem, non-directory destination)
+        and for a post-gate OSError during the export itself, in which case
+        the state also records ``error_code="export.failed"``.
+        """
+        engine = self._valid_command_engine()
+        index = self._stem_index(stem_name)
+        if engine is None or index is None:
+            return None
+        try:
+            destination = Path(destination)
+            if not destination.is_dir():
+                return None
+        except (TypeError, ValueError, OSError):
+            return None
+
+        path, code = self._copy_stem(stem_name, destination)
+        if path is None:
+            self._set_state(replace(self.state, error_code=code))
+            return None
+        return path
+
+    def export_stems(self, stem_names, destination: str | Path) -> bool:
+        """Copy several raw published stems to a destination folder.
+
+        Validates synchronously and, on any gate failure, makes no state
+        change and schedules no worker: no session, closed, an empty or
+        non-string-iterable ``stem_names``, an unknown stem name anywhere in
+        the batch, or a non-directory destination. On success the export
+        runs on a background worker and ``state.export_phase``/
+        ``state.export_results`` report progress and outcome.
+        """
+        if self._valid_command_engine() is None:
+            return False
+        if isinstance(stem_names, str):
+            return False
+        try:
+            names = tuple(stem_names)
+        except TypeError:
+            return False
+        if not names or not all(isinstance(name, str) for name in names):
+            return False
+        if any(self._stem_index(name) is None for name in names):
+            return False
+        try:
+            destination = Path(destination)
+            if not destination.is_dir():
+                return False
+        except (TypeError, ValueError, OSError):
+            return False
+
+        with self._lock:
+            generation = self._generation
+        self._set_state(replace(self.state, export_phase="running", export_results=()))
+        self._start_worker(lambda: self._export_worker(generation, names, destination))
+        return True
+
+    def _export_worker(self, generation: int, stem_names, destination: Path) -> None:
+        results = []
+        for name in stem_names:
+            path, code = self._copy_stem(name, destination)
+            results.append((name, path, code))
+        self._dispatch(lambda: self._finish_export(generation, tuple(results)))
+
+    def _finish_export(self, generation: int, results) -> None:
+        if self._is_current(generation):
+            self._set_state(replace(self.state, export_phase="done", export_results=results))
 
     def _update_setting(self, stem_name: str, **changes) -> bool:
         engine = self._valid_command_engine()

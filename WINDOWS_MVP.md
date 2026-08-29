@@ -37,8 +37,9 @@ The mixer intentionally does not include panning, export, looping, zooming,
 output-device selection, or persisted settings in this MVP. Playback uses one
 Windows audio stream so all four stems keep the same frame position.
 
-The adapter uses the `htdemucs` model. It selects CUDA when PyTorch reports an
-available GPU and retries the complete separation once on CPU if the CUDA run
+The adapter uses the `htdemucs` model. It reuses an already complete result
+folder instead of running Demucs again, selects CUDA when PyTorch reports an
+available GPU, and retries the complete separation once on CPU if the CUDA run
 fails. Publication is atomic: an incomplete result directory is never exposed.
 
 The first real run may download the model weights. Fully offline packaging is

@@ -12,6 +12,7 @@ from SeparationWorker.demucs_adapter import (
     run_demucs,
     separate_audio,
 )
+from SeparationWorker.engine.stem_cache import cache_key
 
 
 class FakeDemucs:
@@ -76,6 +77,38 @@ class DemucsAdapterTests(unittest.TestCase):
             self.assertEqual(MODEL_NAME, command[command.index("--name") + 1])
             self.assertEqual("cuda", command[command.index("--device") + 1])
             self.assertEqual([], list(output.parent.glob(".song-stems.staging-*")))
+
+    def test_reuses_complete_existing_result_without_rerunning_demucs(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            first_runner = FakeDemucs()
+            first = separate_audio(audio_file, output, runner=first_runner, cuda_probe=lambda: True)
+
+            def fail_if_called(_command):
+                raise AssertionError("Demucs must not run for an existing complete result")
+
+            second = separate_audio(audio_file, output, runner=fail_if_called, cuda_probe=lambda: False)
+
+            self.assertEqual(first, second)
+            self.assertEqual(1, len(first_runner.commands))
+
+    def test_reuses_complete_existing_result_at_a_stem_cache_hex_named_destination(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file = Path(root) / "song.mp3"
+            audio_file.write_bytes(b"audio")
+            output = Path(root) / "cache" / cache_key(audio_file)
+            self.assertEqual(64, len(output.name))
+            self.assertTrue(all(character in "0123456789abcdef" for character in output.name))
+            first_runner = FakeDemucs()
+            first = separate_audio(audio_file, output, runner=first_runner, cuda_probe=lambda: True)
+
+            def fail_if_called(_command):
+                raise AssertionError("Demucs must not run for an existing complete result")
+
+            second = separate_audio(audio_file, output, runner=fail_if_called, cuda_probe=lambda: False)
+
+            self.assertEqual(first, second)
+            self.assertEqual(1, len(first_runner.commands))
 
     def test_cuda_failure_retries_once_on_clean_cpu_staging(self):
         with tempfile.TemporaryDirectory() as root:

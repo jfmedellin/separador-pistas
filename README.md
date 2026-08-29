@@ -22,6 +22,10 @@ The MVP turns one audio file into four aligned WAV files, then opens a local mix
 4. Choose an audio file and an output location, then select **Separate into 4 stems**.
 5. The mixer opens automatically after a successful separation. You can also load an existing folder containing the four required WAV files.
 
+If the selected result folder already contains the complete four-stem output,
+the app reopens that result without running Demucs again. To create a new
+separation, choose a different result folder.
+
 ## Command line
 
 The CLI writes a new result directory containing exactly `vocals.wav`, `drums.wav`, `bass.wav`, and `other.wav`:
