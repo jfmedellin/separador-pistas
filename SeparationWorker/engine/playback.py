@@ -88,7 +88,7 @@ class PlaybackEngine:
         self._readers = None
         self._stream = None
         self._snapshot = MixerSnapshot(tuple())
-        self._thread = threading.Thread(target=self._run, name="limbus-playback", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="stemslayer-playback", daemon=True)
         self._thread.start()
 
     @staticmethod

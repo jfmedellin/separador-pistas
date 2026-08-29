@@ -1,1 +1,1 @@
-"""Portable components for the Limbus Split Pro separation worker."""
+"""Portable components for the Stemslayer separation worker."""

@@ -64,7 +64,7 @@ class MixerState:
 
 
 def _start_thread(target: Callable[[], None]) -> None:
-    threading.Thread(target=target, name="limbus-mixer-load", daemon=True).start()
+    threading.Thread(target=target, name="stemslayer-mixer-load", daemon=True).start()
 
 
 def _error_parts(error: Exception) -> tuple[str, str, str | None]:

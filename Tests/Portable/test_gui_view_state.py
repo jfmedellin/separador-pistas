@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from SeparationWorker.engine.mixer import MixSetting, MixerSnapshot
-from SeparationWorker.gui import MixerViewModel
+from SeparationWorker.gui import APP_NAME, MixerViewModel, parse_drop_paths
 from SeparationWorker.mixer_controller import MixerState
 
 
@@ -64,6 +64,34 @@ class MixerViewModelTests(unittest.TestCase):
         self.assertEqual(25, preview.position)
         self.assertEqual(100, preview.frame_count)
         self.assertEqual(0.76, preview.preview_ratio)
+
+
+class DropPathParsingTests(unittest.TestCase):
+    def test_uses_tcl_splitter_to_preserve_paths_with_spaces(self):
+        payload = r"{C:\Music Library\first song.wav} C:\second.wav"
+        received = []
+
+        def splitlist(data):
+            received.append(data)
+            return (r"C:\Music Library\first song.wav", r"C:\second.wav")
+
+        self.assertEqual(
+            (r"C:\Music Library\first song.wav", r"C:\second.wav"),
+            parse_drop_paths(payload, splitlist),
+        )
+        self.assertEqual([payload], received)
+
+    def test_empty_or_malformed_payload_is_ignored(self):
+        def malformed(_data):
+            raise TypeError("malformed Tcl list")
+
+        self.assertEqual((), parse_drop_paths("", malformed))
+        self.assertEqual((), parse_drop_paths("{unterminated", malformed))
+
+
+class BrandingTests(unittest.TestCase):
+    def test_uses_the_approved_product_name(self):
+        self.assertEqual("Stemslayer", APP_NAME)
 
 
 if __name__ == "__main__":

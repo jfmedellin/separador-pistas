@@ -16,7 +16,7 @@ def _manifest(path, asset_id, kind):
         "version": "self-test",
         "origin": "generated-local-self-test",
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "author": "Limbus Split Pro self-test",
+        "author": "Stemslayer self-test",
         "license": {
             "identifier": "LicenseRef-Self-Test",
             "evidence": "generated-in-memory",
