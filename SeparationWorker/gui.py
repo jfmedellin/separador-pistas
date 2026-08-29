@@ -47,8 +47,6 @@ STEMS = (
     ("BASS", "#87A987"),
     ("OTHER", "#8BA4B0"),
 )
-STEM_ROWS = tuple((name.lower() + ".wav", name, color) for name, color in STEMS)
-STEM_ICONS = {"vocals.wav": "mic", "drums.wav": "drum", "bass.wav": "bass", "other.wav": "layers"}
 
 # Presentation for every lane a registered profile can publish. Unknown lanes
 # fall back to a readable label and the neutral colour rather than failing to
@@ -312,6 +310,8 @@ class StemslayerApp:
         self._waveform_session = None
         self._waveform_canvases: dict[str, tk.Canvas] = {}
         self._lane_widgets: dict[str, dict[str, object]] = {}
+        self._lanes_container: ctk.CTkFrame | None = None
+        self._lane_rows: tuple[tuple[str, str, str, bool], ...] = ()
         self._mixer_model = MixerViewModel()
         self._syncing_controls = False
         self._cache_directories: list[Path] = []
@@ -500,7 +500,7 @@ class StemslayerApp:
         footer.pack(fill="x", pady=(20, 40))
         self.action = ctk.CTkButton(
             footer,
-            text="Separate into 4 stems",
+            text=f"Separate into {len(STEM_NAMES)} stems",
             command=self._start,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
@@ -605,77 +605,104 @@ class StemslayerApp:
         )
         self.export_button.grid(row=0, column=4, sticky="e")
 
-        lanes = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
-        lanes.grid(row=2, column=0, padx=32, pady=(0, 22), sticky="nsew")
-        lanes.grid_columnconfigure(0, weight=1)
-        for index, (stem_name, label, color) in enumerate(STEM_ROWS):
-            lanes.grid_rowconfigure(index, weight=1, uniform="lane")
-            lane = ctk.CTkFrame(lanes, fg_color=COLORS["surface"], corner_radius=12, border_width=1, border_color=COLORS["line"])
-            lane.grid(row=index, column=0, pady=(0 if index == 0 else 10, 0), sticky="nsew")
-            lane.grid_columnconfigure(1, weight=1)
-            lane.grid_rowconfigure(0, weight=1)
+        self._lanes_container = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
+        self._lanes_container.grid(row=2, column=0, padx=32, pady=(0, 22), sticky="nsew")
+        self._lanes_container.grid_columnconfigure(0, weight=1)
+        self._build_lanes(self._mixer_model.lane_rows)
 
-            controls = ctk.CTkFrame(lane, width=190, height=104, fg_color=COLORS["surface"], corner_radius=0)
-            controls.grid(row=0, column=0, padx=(4, 8), pady=10, sticky="nsw")
-            controls.grid_propagate(False)
-            bar = tk.Canvas(controls, width=4, height=84, bg=color, highlightthickness=0)
-            bar.grid(row=0, column=0, rowspan=3, sticky="ns", padx=(10, 0))
-            ctk.CTkLabel(controls, text=label, text_color=COLORS["text"], font=("Segoe UI", 11, "bold"), anchor="w").grid(
-                row=0, column=1, columnspan=3, padx=(10, 0), sticky="w"
-            )
-            scale = ctk.CTkSlider(
-                controls,
-                from_=0,
-                to=100,
-                width=112,
-                height=14,
-                fg_color=COLORS["line"],
-                progress_color=color,
-                button_color=COLORS["text"],
-                button_hover_color=COLORS["text"],
-                command=lambda value, name=stem_name: self._volume_changed(name, value),
-            )
-            scale.set(100)
-            scale.grid(row=1, column=1, columnspan=2, padx=(10, 2), pady=(8, 0), sticky="w")
-            percent = ctk.CTkLabel(controls, text="100%", width=34, anchor="e", text_color=COLORS["muted"], font=("Consolas", 9))
-            percent.grid(row=1, column=3, pady=(8, 0), sticky="e")
-            mute = ctk.CTkButton(
-                controls,
-                text="M",
-                width=26,
-                height=22,
-                corner_radius=6,
-                fg_color=COLORS["field"],
-                hover_color=COLORS["line"],
-                text_color=COLORS["muted"],
-                text_color_disabled=COLORS["disabled"],
-                font=("Segoe UI", 9, "bold"),
-                command=lambda name=stem_name: self._toggle_mute(name),
-            )
-            mute.grid(row=2, column=1, padx=(10, 3), pady=(8, 0), sticky="w")
-            solo = ctk.CTkButton(
-                controls,
-                text="S",
-                width=26,
-                height=22,
-                corner_radius=6,
-                fg_color=COLORS["field"],
-                hover_color=COLORS["line"],
-                text_color=COLORS["muted"],
-                text_color_disabled=COLORS["disabled"],
-                font=("Segoe UI", 9, "bold"),
-                command=lambda name=stem_name: self._toggle_solo(name),
-            )
-            solo.grid(row=2, column=2, padx=3, pady=(8, 0), sticky="w")
+    def _build_lanes(self, rows) -> None:
+        """Rebuild one lane widget set per published lane, in profile order.
 
-            canvas = tk.Canvas(lane, bg=COLORS["surface"], highlightthickness=0)
-            canvas.grid(row=0, column=1, padx=(0, 12), pady=10, sticky="nsew")
-            canvas.bind("<Button-1>", self._seek_press)
-            canvas.bind("<B1-Motion>", self._seek_motion)
-            canvas.bind("<ButtonRelease-1>", self._seek_release)
-            canvas.bind("<Configure>", lambda _event: self._draw_waveforms())
-            self._waveform_canvases[stem_name] = canvas
-            self._lane_widgets[stem_name] = {"scale": scale, "percent": percent, "mute": mute, "solo": solo, "color": color}
+        A result carries its own layout, so the lane strip is rebuilt whenever
+        that layout or the absent set changes. Building four fixed lanes once
+        would silently drop the extra lanes of a six-lane result.
+        """
+        container = self._lanes_container
+        for child in container.winfo_children():
+            child.destroy()
+        for index in range(len(self._lane_rows)):
+            container.grid_rowconfigure(index, weight=0, uniform="")
+        self._lane_widgets.clear()
+        self._waveform_canvases.clear()
+        for index, row in enumerate(rows):
+            container.grid_rowconfigure(index, weight=1, uniform="lane")
+            self._build_lane(container, index, *row)
+        self._lane_rows = tuple(rows)
+        # The canvases the previous layout drew into are gone, so force a
+        # redraw rather than trusting the unchanged session identity.
+        self._waveform_session = None
+
+    def _build_lane(self, container, index: int, stem_name: str, label: str, color: str, absent: bool) -> None:
+        lane = ctk.CTkFrame(container, fg_color=COLORS["surface"], corner_radius=12, border_width=1, border_color=COLORS["line"])
+        lane.grid(row=index, column=0, pady=(0 if index == 0 else 10, 0), sticky="nsew")
+        lane.grid_columnconfigure(1, weight=1)
+        lane.grid_rowconfigure(0, weight=1)
+
+        controls = ctk.CTkFrame(lane, width=190, height=104, fg_color=COLORS["surface"], corner_radius=0)
+        controls.grid(row=0, column=0, padx=(4, 8), pady=10, sticky="nsw")
+        controls.grid_propagate(False)
+        bar = tk.Canvas(controls, width=4, height=84, bg=COLORS["line"] if absent else color, highlightthickness=0)
+        bar.grid(row=0, column=0, rowspan=3, sticky="ns", padx=(10, 0))
+        ctk.CTkLabel(
+            controls,
+            text=label,
+            text_color=COLORS["muted"] if absent else COLORS["text"],
+            font=("Segoe UI", 9 if absent else 11, "bold"),
+            anchor="w",
+        ).grid(row=0, column=1, columnspan=3, padx=(10, 0), sticky="w")
+        scale = ctk.CTkSlider(
+            controls,
+            from_=0,
+            to=100,
+            width=112,
+            height=14,
+            fg_color=COLORS["line"],
+            progress_color=color,
+            button_color=COLORS["text"],
+            button_hover_color=COLORS["text"],
+            command=lambda value, name=stem_name: self._volume_changed(name, value),
+        )
+        scale.set(100)
+        scale.grid(row=1, column=1, columnspan=2, padx=(10, 2), pady=(8, 0), sticky="w")
+        percent = ctk.CTkLabel(controls, text="100%", width=34, anchor="e", text_color=COLORS["muted"], font=("Consolas", 9))
+        percent.grid(row=1, column=3, pady=(8, 0), sticky="e")
+        mute = ctk.CTkButton(
+            controls,
+            text="M",
+            width=26,
+            height=22,
+            corner_radius=6,
+            fg_color=COLORS["field"],
+            hover_color=COLORS["line"],
+            text_color=COLORS["muted"],
+            text_color_disabled=COLORS["disabled"],
+            font=("Segoe UI", 9, "bold"),
+            command=lambda name=stem_name: self._toggle_mute(name),
+        )
+        mute.grid(row=2, column=1, padx=(10, 3), pady=(8, 0), sticky="w")
+        solo = ctk.CTkButton(
+            controls,
+            text="S",
+            width=26,
+            height=22,
+            corner_radius=6,
+            fg_color=COLORS["field"],
+            hover_color=COLORS["line"],
+            text_color=COLORS["muted"],
+            text_color_disabled=COLORS["disabled"],
+            font=("Segoe UI", 9, "bold"),
+            command=lambda name=stem_name: self._toggle_solo(name),
+        )
+        solo.grid(row=2, column=2, padx=3, pady=(8, 0), sticky="w")
+
+        canvas = tk.Canvas(lane, bg=COLORS["surface"], highlightthickness=0)
+        canvas.grid(row=0, column=1, padx=(0, 12), pady=10, sticky="nsew")
+        canvas.bind("<Button-1>", self._seek_press)
+        canvas.bind("<B1-Motion>", self._seek_motion)
+        canvas.bind("<ButtonRelease-1>", self._seek_release)
+        canvas.bind("<Configure>", lambda _event: self._draw_waveforms())
+        self._waveform_canvases[stem_name] = canvas
+        self._lane_widgets[stem_name] = {"scale": scale, "percent": percent, "mute": mute, "solo": solo, "color": color}
 
     def _pick_input(self) -> None:
         selected = filedialog.askopenfilename(
@@ -735,7 +762,8 @@ class StemslayerApp:
             command=self._close_export_overlay,
         ).pack(side="right")
 
-        stem_vars: dict[str, tk.BooleanVar] = {stem_name: tk.BooleanVar(value=True) for stem_name, _label, _color in STEM_ROWS}
+        export_rows = self._lane_rows or self._mixer_model.lane_rows
+        stem_vars: dict[str, tk.BooleanVar] = {row[0]: tk.BooleanVar(value=True) for row in export_rows}
         select_all_var = tk.BooleanVar(value=True)
 
         select_all = ctk.CTkCheckBox(
@@ -756,12 +784,12 @@ class StemslayerApp:
         checkbox_widgets: list[ctk.CTkCheckBox] = []
         rows = ctk.CTkFrame(body, fg_color="transparent")
         rows.pack(fill="x")
-        for stem_name, label, color in STEM_ROWS:
+        for stem_name, label, color, _absent in export_rows:
             row = ctk.CTkFrame(rows, fg_color=COLORS["field"], corner_radius=10)
             row.pack(fill="x", pady=4)
             row_inner = ctk.CTkFrame(row, fg_color="transparent")
             row_inner.pack(fill="x", padx=12, pady=10)
-            _icon(row_inner, STEM_ICONS[stem_name], 16, color, COLORS["field"]).pack(side="left", padx=(0, 10))
+            _icon(row_inner, lane_icon(stem_name), 16, color, COLORS["field"]).pack(side="left", padx=(0, 10))
             checkbox = ctk.CTkCheckBox(
                 row_inner,
                 text=label,
@@ -785,7 +813,7 @@ class StemslayerApp:
 
         export_button = ctk.CTkButton(
             body,
-            text="Export 4 selected",
+            text=f"Export {len(export_rows)} selected",
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
             text_color=COLORS["accent_text"],
@@ -837,7 +865,7 @@ class StemslayerApp:
             return
 
         message.configure(text="Export complete")
-        labels = {stem_name: label for stem_name, label, _color in STEM_ROWS}
+        labels = {row[0]: row[1] for row in (self._lane_rows or self._mixer_model.lane_rows)}
         for stem_name, path, code in state.export_results:
             display_name = labels.get(stem_name, stem_name)
             if path is not None:
@@ -882,7 +910,11 @@ class StemslayerApp:
         _draw_icon(self.status_icon, icon_kind, 20, icon_color)
         running = state.phase == "running"
         self.input_button.configure(state="disabled" if running else "normal")
-        self.action.configure(state="normal" if state.can_start else "disabled", text="Separating…" if running else "Separate into 4 stems")
+        lane_count = len(self.controller.profile.lanes)
+        self.action.configure(
+            state="normal" if state.can_start else "disabled",
+            text="Separating…" if running else f"Separate into {lane_count} stems",
+        )
 
     def _render_mixer_state(self, state: MixerState) -> None:
         if self._closed:
@@ -891,6 +923,8 @@ class StemslayerApp:
             self._preview_frame = None
         model = MixerViewModel.from_controller_state(state, preview_frame=self._preview_frame)
         self._mixer_model = model
+        if model.lane_rows != self._lane_rows:
+            self._build_lanes(model.lane_rows)
         self.mixer_headline.set(state.headline)
         self.mixer_detail.set(state.detail)
         self.mixer_time.set(f"{format_time(model.position_seconds)} / {format_time(model.duration_seconds)}")
@@ -937,7 +971,7 @@ class StemslayerApp:
             height = max(1, canvas.winfo_height())
             center = height / 2.0
             half = max(2.0, center - 8.0)
-            color = next(item[2] for item in STEM_ROWS if item[0] == stem_name)
+            color = lane_color(stem_name)
             if peaks:
                 for x in range(width):
                     index = min(len(peaks) - 1, int(x * len(peaks) / width))
