@@ -17,7 +17,12 @@ from SeparationWorker.engine.playback import PlaybackEngine, PlaybackError, Play
 from SeparationWorker.engine.stem_session import STEM_NAMES, StemSession
 
 
-_DEFAULT_SETTINGS = MixerSnapshot(tuple(MixSetting(name) for name in STEM_NAMES))
+def _settings_for(names) -> MixerSnapshot:
+    """Return one default mix setting per published lane, in profile order."""
+    return MixerSnapshot(tuple(MixSetting(name) for name in names))
+
+
+_DEFAULT_SETTINGS = _settings_for(STEM_NAMES)
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,16 @@ class MixerState:
     error_code: str | None = None
     export_phase: str = "idle"
     export_results: tuple[tuple[str, Path | None, str | None], ...] = ()
+    lane_names: tuple[str, ...] = STEM_NAMES
+    absent_lanes: tuple[str, ...] = ()
+
+    def is_absent(self, stem_name: str) -> bool:
+        """Report whether a lane was declared absent for this track.
+
+        An absent lane is real silence that still plays and exports; the view
+        labels it rather than hiding it.
+        """
+        return Path(stem_name).stem in self.absent_lanes
 
     @property
     def duration_frames(self) -> int:
@@ -177,7 +192,7 @@ class MixerController:
                 folder=folder,
                 title=title,
                 phase="loading",
-                headline="Loading 4 stems",
+                headline="Loading stems",
                 detail="Validating the WAV files and preparing waveforms.",
             )
         )
@@ -233,16 +248,19 @@ class MixerController:
 
         loaded_folder = Path(getattr(session, "folder", folder))
         frame_count = int(getattr(session, "frame_count", 0))
+        names = tuple(getattr(session, "names", ())) or STEM_NAMES
         self._set_state(
             MixerState(
                 folder=loaded_folder,
                 session=session,
                 title=title,
                 phase="ready",
-                headline="4 stems are ready",
+                headline=f"{len(names)} stems are ready",
                 detail=str(loaded_folder),
                 frame_count=frame_count,
-                settings=_DEFAULT_SETTINGS,
+                settings=_settings_for(names),
+                lane_names=names,
+                absent_lanes=tuple(getattr(session, "absent", ())),
             )
         )
 
@@ -263,6 +281,8 @@ class MixerController:
                 playing=False,
                 settings=_DEFAULT_SETTINGS,
                 error_code=code,
+                lane_names=STEM_NAMES,
+                absent_lanes=(),
             )
         )
 
@@ -484,15 +504,15 @@ class MixerController:
             return None
         return self.state.settings.settings[index]
 
-    @staticmethod
-    def _stem_index(stem_name: str):
+    def _stem_index(self, stem_name: str):
+        """Resolve a lane name against the loaded session's own layout."""
         if not isinstance(stem_name, str):
             return None
         canonical = stem_name.lower()
         if not canonical.endswith(".wav"):
             canonical = f"{canonical}.wav"
         try:
-            return STEM_NAMES.index(canonical)
+            return self.state.lane_names.index(canonical)
         except ValueError:
             return None
 

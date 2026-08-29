@@ -12,7 +12,6 @@ import numpy as np
 
 from .mixer import MixerSnapshot, effective_gains
 from .pcm import AudioContractError
-from .stem_session import STEM_NAMES
 
 
 _DEFAULT_BLOCK_SIZE = 4_096
@@ -71,7 +70,7 @@ class PlaybackEngine:
     ):
         if isinstance(block_size, bool) or not isinstance(block_size, int) or block_size <= 0:
             raise ValueError("block_size must be a positive integer")
-        self._validate_session(session)
+        self._names = self._validate_session(session)
         self._session = session
         self._stream_factory = stream_factory or _default_stream_factory
         self._reader_factory = reader_factory or _default_reader_factory
@@ -93,13 +92,16 @@ class PlaybackEngine:
 
     @staticmethod
     def _validate_session(session):
+        """Return the session's published lane names, in playback order."""
         paths = tuple(getattr(session, "paths", ()))
-        if len(paths) != len(STEM_NAMES):
-            raise ValueError("Playback requires exactly four stem paths")
+        names = tuple(getattr(session, "names", ()) or tuple(Path(path).name for path in paths))
+        if not paths or len(paths) != len(names):
+            raise ValueError("Playback requires one reader path per published lane")
         for attribute in ("sample_rate", "channels", "frame_count"):
             value = getattr(session, attribute, None)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"Playback session requires a positive {attribute}")
+        return names
 
     @property
     def position(self) -> int:
@@ -138,8 +140,8 @@ class PlaybackEngine:
 
     def replace(self, session):
         """Replace content through the same serialized lifecycle as close."""
-        self._validate_session(session)
-        self._enqueue("replace", session)
+        names = self._validate_session(session)
+        self._enqueue("replace", (session, names))
 
     def close(self):
         with self._lock:
@@ -233,7 +235,7 @@ class PlaybackEngine:
             self._snapshot = value
         elif command == "replace":
             self._stop_resources()
-            self._session = value
+            self._session, self._names = value
             with self._lock:
                 self._position = 0
                 self._playing = False
@@ -288,7 +290,7 @@ class PlaybackEngine:
             self._close_safely(stream)
             raise _error(
                 "playback.output_open",
-                f"Could not open the four stems or Windows audio output: {exc}.",
+                f"Could not open the published stems or Windows audio output: {exc}.",
                 "Check that all WAV files are readable and a Windows output device is available.",
             ) from exc
         self._readers = readers
@@ -312,7 +314,7 @@ class PlaybackEngine:
         gains = effective_gains(self._snapshot)
         mixed = np.zeros((requested, self._session.channels), dtype=np.float32)
         try:
-            for stem_name, reader in zip(STEM_NAMES, self._readers):
+            for stem_name, reader in zip(self._names, self._readers):
                 try:
                     block = np.asarray(
                         reader.read(requested, dtype="float32", always_2d=True), dtype=np.float32
