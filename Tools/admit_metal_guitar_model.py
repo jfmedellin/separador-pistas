@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +21,14 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+# Admission measures with the same functions the runtime pipeline enforces, so
+# a checkpoint can never pass one definition of "absent" and fail the other.
+from SeparationWorker.engine.role_metrics import (  # noqa: E402
+    RoleThresholds,
+    cross_role_energy_ratio_db,
+    peak_dbfs,
+    signal_to_residual_db,
+)
 from SeparationWorker.guitar_adapter import (  # noqa: E402
     GuitarSpecialistError,
     resolve_specialist,
@@ -30,7 +37,6 @@ from SeparationWorker.guitar_adapter import (  # noqa: E402
 DEFAULT_THRESHOLDS = REPOSITORY_ROOT / "Compliance" / "evidence" / "metal-guitar" / "thresholds.json"
 DEFAULT_ASSET_ROOT = REPOSITORY_ROOT / "Compliance" / "assets"
 REQUIRED_PERCEPTUAL_FIELDS = ("method", "raters", "preference_ratio", "material", "recorded_at")
-SILENCE_FLOOR = 1e-12
 
 
 @dataclass(frozen=True)
@@ -58,52 +64,9 @@ class AdmissionReport:
         return "\n".join(lines)
 
 
-def peak_dbfs(samples: np.ndarray) -> float:
-    """Return the peak level in dBFS, or negative infinity for digital silence."""
-    peak = float(np.max(np.abs(np.asarray(samples, dtype=np.float64)))) if samples.size else 0.0
-    if peak <= SILENCE_FLOOR:
-        return -math.inf
-    return 20.0 * math.log10(peak)
-
-
-def signal_to_residual_db(reference: np.ndarray, estimate: np.ndarray) -> float:
-    """Return how far the estimate reproduces the reference, in dB."""
-    reference = np.asarray(reference, dtype=np.float64)
-    estimate = np.asarray(estimate, dtype=np.float64)
-    if reference.shape != estimate.shape:
-        raise ValueError("Reconstruction requires identically shaped signals.")
-    reference_energy = float(np.sum(reference**2))
-    residual_energy = float(np.sum((reference - estimate) ** 2))
-    if reference_energy <= SILENCE_FLOOR:
-        return math.inf if residual_energy <= SILENCE_FLOOR else -math.inf
-    if residual_energy <= SILENCE_FLOOR:
-        return math.inf
-    return 10.0 * math.log10(reference_energy / residual_energy)
-
-
-def cross_role_energy_ratio_db(lane: np.ndarray, other_reference: np.ndarray) -> float:
-    """Return how much of the other role's reference energy appears in this lane."""
-    lane = np.asarray(lane, dtype=np.float64)
-    other_reference = np.asarray(other_reference, dtype=np.float64)
-    if lane.shape != other_reference.shape:
-        raise ValueError("Leakage requires identically shaped signals.")
-    other_energy = float(np.sum(other_reference**2))
-    if other_energy <= SILENCE_FLOOR:
-        return -math.inf
-    projection = float(np.sum(lane * other_reference)) / other_energy
-    leaked_energy = (projection**2) * other_energy
-    lane_energy = float(np.sum(lane**2))
-    if lane_energy <= SILENCE_FLOOR:
-        return -math.inf
-    if leaked_energy <= SILENCE_FLOOR:
-        return -math.inf
-    return 10.0 * math.log10(leaked_energy / lane_energy)
-
-
 def role_is_absent(samples: np.ndarray, thresholds: dict) -> bool:
     """Report whether a role lane is silent enough to count as an absent role."""
-    limit = thresholds["gates"]["role_absence"]["absent_at_or_below_dbfs"]
-    return peak_dbfs(samples) <= limit
+    return peak_dbfs(samples) <= RoleThresholds.from_payload(thresholds).absence_at_or_below_dbfs
 
 
 def check_thresholds(thresholds: dict) -> GateResult:

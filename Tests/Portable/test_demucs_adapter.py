@@ -1,9 +1,14 @@
+import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+
+import numpy as np
+import soundfile as sf
 
 from SeparationWorker.demucs_adapter import (
     MODEL_NAME,
@@ -14,7 +19,20 @@ from SeparationWorker.demucs_adapter import (
     run_demucs,
     separate_audio,
 )
+from SeparationWorker.engine.publication import PublicationError
+from SeparationWorker.engine.role_metrics import RoleThresholds
 from SeparationWorker.engine.stem_cache import cache_key
+from SeparationWorker.engine.stem_profile import (
+    LEGACY_PROFILE,
+    MANIFEST_NAME,
+    METAL_PROFILE,
+    parse_manifest,
+)
+
+SAMPLE_RATE = 44100
+THRESHOLDS_PATH = (
+    Path(__file__).resolve().parents[2] / "Compliance" / "evidence" / "metal-guitar" / "thresholds.json"
+)
 
 
 class FakeDemucs:
@@ -254,6 +272,331 @@ class DemucsCliTests(unittest.TestCase):
         self.assertEqual(0, exit_code)
         separate.assert_called_once_with("song.mp3", "stems")
         output.assert_called_once_with(Path("result"))
+
+
+def tone(frequency, amplitude=0.4, seconds=0.25):
+    frames = int(SAMPLE_RATE * seconds)
+    time = np.arange(frames, dtype=np.float32) / SAMPLE_RATE
+    wave = (amplitude * np.sin(2.0 * np.pi * frequency * time)).astype(np.float32)
+    return np.stack([wave, wave], axis=1)
+
+
+def calibrated_thresholds():
+    payload = json.loads(THRESHOLDS_PATH.read_text(encoding="utf-8"))
+    payload["calibrated"] = True
+    return RoleThresholds.from_payload(payload)
+
+
+def admitted_metal(specialist_id="metal-lead-rhythm-v1"):
+    return replace(METAL_PROFILE, specialist_id=specialist_id, enabled=True)
+
+
+class FakeMetalDemucs:
+    """Write real six-source audio so folding and role validation are exercised."""
+
+    def __init__(self, sources, *, missing=()):
+        self.sources = sources
+        self.missing = set(missing)
+        self.commands = []
+
+    def __call__(self, command):
+        command = list(command)
+        self.commands.append(command)
+        model = command[command.index("--name") + 1]
+        output = Path(command[command.index("--out") + 1])
+        source = output / model / Path(command[-1]).stem
+        source.mkdir(parents=True)
+        for name, samples in self.sources.items():
+            if name in self.missing:
+                continue
+            sf.write(str(source / f"{name}.wav"), samples, SAMPLE_RATE, subtype="FLOAT")
+
+
+def specialist_writing(lead, rhythm, *, omit=(), rate=SAMPLE_RATE):
+    def run(guitar_path, staging):
+        for name, samples in (("lead_guitar.wav", lead), ("rhythm_guitar.wav", rhythm)):
+            if name in omit:
+                continue
+            sf.write(str(staging / name), samples, rate, subtype="FLOAT")
+
+    return run
+
+
+class MetalProfileSeparationTests(unittest.TestCase):
+    def setUp(self):
+        self.lead_part = tone(880.0)
+        self.rhythm_part = tone(110.0, amplitude=0.5)
+        self.guitar = self.lead_part + self.rhythm_part
+        self.piano = tone(330.0, amplitude=0.2)
+        self.other = tone(220.0, amplitude=0.1)
+        self.sources = {
+            "vocals": tone(440.0),
+            "drums": tone(150.0),
+            "bass": tone(80.0),
+            "guitar": self.guitar,
+            "piano": self.piano,
+            "other": self.other,
+        }
+
+    def make_paths(self, root):
+        audio_file = Path(root) / "song.mp3"
+        audio_file.write_bytes(b"audio")
+        return audio_file, Path(root) / "cache" / "metal-result"
+
+    def separate(self, audio_file, output, **overrides):
+        settings = {
+            "profile": admitted_metal(),
+            "runner": FakeMetalDemucs(self.sources),
+            "cuda_probe": lambda: False,
+            "specialist": specialist_writing(self.lead_part, self.rhythm_part),
+            "thresholds": calibrated_thresholds(),
+        }
+        settings.update(overrides)
+        return separate_audio(audio_file, output, **settings)
+
+    def test_disabled_metal_profile_refuses_before_running_anything(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            runner = FakeMetalDemucs(self.sources)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                separate_audio(audio_file, output, profile=METAL_PROFILE, runner=runner)
+
+            self.assertEqual("profile.disabled", caught.exception.code)
+            self.assertEqual([], runner.commands)
+            self.assertFalse(output.parent.exists())
+
+    def test_profile_requiring_a_specialist_refuses_without_one(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(audio_file, output, specialist=None)
+
+            self.assertEqual("profile.specialist_missing", caught.exception.code)
+            self.assertFalse(output.exists())
+
+    def test_uncalibrated_thresholds_block_the_profile(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            shipped = RoleThresholds.load(THRESHOLDS_PATH)
+            self.assertFalse(shipped.calibrated)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(audio_file, output, thresholds=shipped)
+
+            self.assertEqual("profile.thresholds_uncalibrated", caught.exception.code)
+            self.assertFalse(output.exists())
+
+    def test_metal_publishes_six_ordered_lanes_with_a_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            runner = FakeMetalDemucs(self.sources)
+
+            result = self.separate(audio_file, output, runner=runner)
+
+            published = {path.name for path in result.iterdir()}
+            self.assertEqual(set(admitted_metal().file_names) | {MANIFEST_NAME}, published)
+            self.assertEqual("htdemucs_6s", runner.commands[0][runner.commands[0].index("--name") + 1])
+            manifest = parse_manifest((result / MANIFEST_NAME).read_bytes())
+            self.assertEqual(admitted_metal().file_names, manifest.file_names)
+            self.assertEqual((), manifest.absent_lane_ids)
+
+    def test_combined_guitar_never_appears_beside_its_children(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            result = self.separate(audio_file, output)
+
+            self.assertFalse((result / "guitar.wav").exists())
+            self.assertTrue((result / "lead_guitar.wav").is_file())
+            self.assertTrue((result / "rhythm_guitar.wav").is_file())
+
+    def test_residual_folds_piano_and_primary_other_without_duplicating_guitar(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            result = self.separate(audio_file, output)
+
+            published, rate = sf.read(str(result / "other.wav"), dtype="float32", always_2d=True)
+            self.assertEqual(SAMPLE_RATE, rate)
+            np.testing.assert_allclose(self.piano + self.other, published, atol=1e-6)
+
+    def test_track_without_lead_publishes_a_declared_silent_lane(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            sources = dict(self.sources, guitar=self.rhythm_part)
+            silence = np.zeros_like(self.rhythm_part)
+
+            result = self.separate(
+                audio_file,
+                output,
+                runner=FakeMetalDemucs(sources),
+                specialist=specialist_writing(silence, self.rhythm_part),
+            )
+
+            manifest = parse_manifest((result / MANIFEST_NAME).read_bytes())
+            self.assertEqual(("lead_guitar",), manifest.absent_lane_ids)
+            self.assertTrue((result / "lead_guitar.wav").is_file())
+            lead = next(lane for lane in manifest.lanes if lane.lane_id == "lead_guitar")
+            self.assertIn("reconstruct", lead.absence_reason)
+
+    def test_silent_lane_that_loses_energy_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            silence = np.zeros_like(self.lead_part)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(
+                    audio_file, output, specialist=specialist_writing(silence, self.rhythm_part)
+                )
+
+            self.assertEqual("specialist.reconstruction_failed", caught.exception.code)
+            self.assertFalse(output.exists())
+
+    def test_noise_floor_placeholder_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            placeholder = tone(880.0, amplitude=1e-3)
+            sources = dict(self.sources, guitar=placeholder + self.rhythm_part)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(
+                    audio_file,
+                    output,
+                    runner=FakeMetalDemucs(sources),
+                    specialist=specialist_writing(placeholder, self.rhythm_part),
+                )
+
+            self.assertEqual("specialist.lane_not_audible", caught.exception.code)
+            self.assertFalse(output.exists())
+
+    def test_duplicated_guitar_energy_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(
+                    audio_file, output, specialist=specialist_writing(self.guitar, self.guitar)
+                )
+
+            self.assertEqual("specialist.reconstruction_failed", caught.exception.code)
+            self.assertFalse(output.exists())
+
+    def test_misaligned_role_lane_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            short_lead = self.lead_part[: len(self.lead_part) // 2]
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(
+                    audio_file, output, specialist=specialist_writing(short_lead, self.rhythm_part)
+                )
+
+            self.assertEqual("specialist.misaligned", caught.exception.code)
+            self.assertFalse(output.exists())
+
+    def test_partial_specialist_output_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(
+                    audio_file,
+                    output,
+                    specialist=specialist_writing(
+                        self.lead_part, self.rhythm_part, omit=("rhythm_guitar.wav",)
+                    ),
+                )
+
+            self.assertEqual("specialist.output_incomplete", caught.exception.code)
+            self.assertIn("rhythm_guitar.wav", caught.exception.cause)
+            self.assertFalse(output.exists())
+
+    def test_missing_primary_source_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(
+                    audio_file, output, runner=FakeMetalDemucs(self.sources, missing={"piano"})
+                )
+
+            self.assertEqual("demucs.output_incomplete", caught.exception.code)
+            self.assertIn("piano.wav", caught.exception.cause)
+            self.assertFalse(output.exists())
+
+
+class ProfileResultReuseTests(unittest.TestCase):
+    def setUp(self):
+        self.sources = {
+            "vocals": tone(440.0),
+            "drums": tone(150.0),
+            "bass": tone(80.0),
+            "guitar": tone(880.0) + tone(110.0, amplitude=0.5),
+            "piano": tone(330.0, amplitude=0.2),
+            "other": tone(220.0, amplitude=0.1),
+        }
+        self.lead = tone(880.0)
+        self.rhythm = tone(110.0, amplitude=0.5)
+
+    def separate(self, audio_file, output, profile, runner):
+        return separate_audio(
+            audio_file,
+            output,
+            profile=profile,
+            runner=runner,
+            cuda_probe=lambda: False,
+            specialist=specialist_writing(self.lead, self.rhythm),
+            thresholds=calibrated_thresholds(),
+        )
+
+    def test_metal_result_is_reused_without_rerunning_the_pipeline(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file = Path(root) / "song.mp3"
+            audio_file.write_bytes(b"audio")
+            output = Path(root) / "cache" / "metal-result"
+            first_runner = FakeMetalDemucs(self.sources)
+            first = self.separate(audio_file, output, admitted_metal(), first_runner)
+
+            def fail_if_called(_command):
+                raise AssertionError("The pipeline must not run for a reusable result")
+
+            second = self.separate(audio_file, output, admitted_metal(), fail_if_called)
+
+            self.assertEqual(first, second)
+            self.assertEqual(1, len(first_runner.commands))
+
+    def test_a_result_from_another_specialist_is_never_adopted(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file = Path(root) / "song.mp3"
+            audio_file.write_bytes(b"audio")
+            output = Path(root) / "cache" / "metal-result"
+            self.separate(audio_file, output, admitted_metal("v1"), FakeMetalDemucs(self.sources))
+            second_runner = FakeMetalDemucs(self.sources)
+
+            with self.assertRaises(PublicationError) as caught:
+                self.separate(audio_file, output, admitted_metal("v2"), second_runner)
+
+            self.assertEqual("publication.reconciliation_required", caught.exception.code)
+            self.assertEqual(1, len(second_runner.commands))
+
+    def test_a_manifest_less_legacy_folder_is_never_adopted_by_metal(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file = Path(root) / "song.mp3"
+            audio_file.write_bytes(b"audio")
+            output = Path(root) / "cache" / "result"
+            output.mkdir(parents=True)
+            for name in LEGACY_PROFILE.file_names:
+                sf.write(str(output / name), tone(440.0), SAMPLE_RATE, subtype="FLOAT")
+
+            with self.assertRaises(PublicationError) as caught:
+                self.separate(audio_file, output, admitted_metal(), FakeMetalDemucs(self.sources))
+
+            self.assertEqual("publication.reconciliation_required", caught.exception.code)
+            self.assertEqual(
+                set(LEGACY_PROFILE.file_names), {path.name for path in output.iterdir()}
+            )
 
 
 if __name__ == "__main__":

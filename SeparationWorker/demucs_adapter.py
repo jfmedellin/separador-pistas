@@ -1,8 +1,9 @@
-"""Small Demucs v4.1 adapter for the Windows four-stem MVP."""
+"""Small Demucs v4.1 adapter for the Windows stem profiles."""
 
 from __future__ import annotations
 
 import importlib.metadata
+import io
 import shutil
 import subprocess
 import sys
@@ -11,7 +12,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+import numpy as np
+import soundfile as sf
+
 from SeparationWorker.engine.publication import publish_atomic
+from SeparationWorker.engine.role_metrics import RoleThresholds, is_absent, is_audible, reconstructs
+from SeparationWorker.engine.stem_profile import (
+    LEGACY_PROFILE,
+    MANIFEST_NAME,
+    StemProfile,
+    StemProfileError,
+    build_manifest,
+    parse_manifest,
+    verify_manifest,
+)
 from SeparationWorker.engine.stem_session import STEM_NAMES
 
 
@@ -19,6 +33,10 @@ MODEL_NAME = "htdemucs"
 WORKER_EXECUTABLE = "StemslayerWorker.exe"
 DIAGNOSTIC_MAX_LINES = 6
 DIAGNOSTIC_MAX_CHARACTERS = 800
+
+# Callable receiving the isolated specialist input WAV and a staging directory,
+# and writing one WAV per role lane into it.
+SpecialistRunner = Callable[[Path, Path], None]
 
 
 @dataclass(eq=False)
@@ -138,7 +156,12 @@ def _failure_cause(device: str, error: subprocess.CalledProcessError) -> str:
     return cause
 
 
-def _command(audio_file: Path, staging: Path, device: str) -> list[str]:
+def _command(
+    audio_file: Path,
+    staging: Path,
+    device: str,
+    profile: StemProfile = LEGACY_PROFILE,
+) -> list[str]:
     executable = sys.executable
     if getattr(sys, "frozen", False):
         executable = str(frozen_worker_path())
@@ -148,7 +171,7 @@ def _command(audio_file: Path, staging: Path, device: str) -> list[str]:
     return [
         *command,
         "--name",
-        MODEL_NAME,
+        profile.primary_model,
         "--device",
         device,
         "--out",
@@ -162,26 +185,136 @@ def _reset_directory(path: Path) -> None:
     path.mkdir()
 
 
-def _read_stems(staging: Path, audio_file: Path) -> dict[str, bytes]:
-    source = staging / MODEL_NAME / audio_file.stem
-    missing = [name for name in STEM_NAMES if not (source / name).is_file()]
+def _raw_output_paths(staging: Path, audio_file: Path, profile: StemProfile) -> dict[str, Path]:
+    """Return one path per raw output the primary model was asked to produce."""
+    source = staging / profile.primary_model / audio_file.stem
+    names = {name: f"{name}.wav" for name in profile.raw_outputs}
+    missing = [file_name for file_name in names.values() if not (source / file_name).is_file()]
     if missing:
         raise DemucsSeparationError(
             "demucs.output_incomplete",
             f"Demucs did not produce the required stems: {', '.join(missing)}.",
             "Discard the incomplete result, inspect Demucs diagnostics, and retry the complete song.",
         )
-    return {name: (source / name).read_bytes() for name in STEM_NAMES}
+    return {name: source / file_name for name, file_name in names.items()}
 
 
-def _is_complete_existing_result(output_directory: Path) -> bool:
-    """Recognize a previously published four-stem result without mutating it."""
+def _read_audio(path: Path) -> tuple[np.ndarray, int, str]:
+    try:
+        data, rate = sf.read(str(path), dtype="float32", always_2d=True)
+        subtype = sf.info(str(path)).subtype
+    except (RuntimeError, sf.LibsndfileError, OSError) as exc:
+        raise DemucsSeparationError(
+            "stem.unreadable",
+            f"A separated stem could not be decoded: {path.name} ({exc}).",
+            "Discard the incomplete result and retry the complete song.",
+        ) from exc
+    return data, rate, subtype
+
+
+def _encode_audio(samples: np.ndarray, rate: int, subtype: str) -> bytes:
+    buffer = io.BytesIO()
+    sf.write(buffer, samples, rate, format="WAV", subtype=subtype)
+    return buffer.getvalue()
+
+
+def _fold(paths: Sequence[Path]) -> bytes:
+    """Sum several aligned stems into one residual lane."""
+    total: np.ndarray | None = None
+    rate = 0
+    subtype = ""
+    for path in paths:
+        data, this_rate, this_subtype = _read_audio(path)
+        if total is None:
+            total, rate, subtype = data.copy(), this_rate, this_subtype
+            continue
+        if data.shape != total.shape or this_rate != rate:
+            raise DemucsSeparationError(
+                "stem.misaligned",
+                f"Stem {path.name} does not align with the other residual sources.",
+                "Discard the result and retry the complete song.",
+            )
+        total += data
+    return _encode_audio(total, rate, subtype)
+
+
+def _role_group(profile: StemProfile) -> str:
+    return next(lane.role_group for lane in profile.lanes if lane.role_group)
+
+
+def _validate_roles(
+    profile: StemProfile,
+    reference_path: Path,
+    role_paths: dict[str, Path],
+    thresholds: RoleThresholds,
+) -> dict[str, str]:
+    """Confirm the role pair reconstructs its source and report absent roles.
+
+    Absence is decided by reconstruction, never by lane energy alone: a silent
+    lane whose pair still reproduces the isolated source is a correct result,
+    and a silent lane that loses energy is a failure.
+    """
+    reference, rate, _ = _read_audio(reference_path)
+    lanes = profile.role_lanes(_role_group(profile))
+    estimate: np.ndarray | None = None
+    samples: dict[str, np.ndarray] = {}
+    for lane in lanes:
+        data, this_rate, _ = _read_audio(role_paths[lane.lane_id])
+        if data.shape != reference.shape or this_rate != rate:
+            raise DemucsSeparationError(
+                "specialist.misaligned",
+                f"Role lane {lane.lane_id!r} does not align with its isolated source.",
+                "Discard the result and retry; role lanes must match frame zero, rate, channels, and duration.",
+            )
+        samples[lane.lane_id] = data
+        estimate = data.copy() if estimate is None else estimate + data
+    if not reconstructs(reference, estimate, thresholds):
+        raise DemucsSeparationError(
+            "specialist.reconstruction_failed",
+            "The role lanes do not reproduce the isolated source within the calibrated limit.",
+            "Discard the result; the decomposition lost or duplicated energy.",
+        )
+    reasons: dict[str, str] = {}
+    for lane in lanes:
+        data = samples[lane.lane_id]
+        if is_absent(data, thresholds):
+            reasons[lane.lane_id] = (
+                f"No {lane.display_name.lower()} is present in this track; "
+                "the role lanes still reconstruct the isolated source."
+            )
+        elif not is_audible(data, thresholds):
+            raise DemucsSeparationError(
+                "specialist.lane_not_audible",
+                f"Role lane {lane.lane_id!r} carries only a noise floor.",
+                "Discard the result; a lane must carry real content or be declared absent.",
+            )
+    return reasons
+
+
+def _assemble_lanes(
+    profile: StemProfile,
+    raw_paths: dict[str, Path],
+    role_paths: dict[str, Path],
+) -> dict[str, bytes]:
+    files: dict[str, bytes] = {}
+    for lane in profile.lanes:
+        if lane.role_group:
+            files[lane.file_name] = role_paths[lane.lane_id].read_bytes()
+        elif lane.residual and profile.residual_sources:
+            files[lane.file_name] = _fold([raw_paths[name] for name in profile.residual_sources])
+        else:
+            files[lane.file_name] = raw_paths[lane.lane_id].read_bytes()
+    return files
+
+
+def _is_complete_existing_result(output_directory: Path, file_names: Sequence[str]) -> bool:
+    """Recognize a previously published manifest-less result without mutating it."""
     try:
         if not output_directory.is_dir() or output_directory.is_symlink():
             return False
         entries = tuple(output_directory.iterdir())
         return (
-            {entry.name for entry in entries} == set(STEM_NAMES)
+            {entry.name for entry in entries} == set(file_names)
             and all(
                 entry.is_file() and not entry.is_symlink() and entry.stat().st_size > 0
                 for entry in entries
@@ -191,14 +324,52 @@ def _is_complete_existing_result(output_directory: Path) -> bool:
         return False
 
 
+def _is_reusable_existing_result(output_directory: Path, profile: StemProfile) -> bool:
+    """Recognize a result this exact pipeline may reuse, without mutating it."""
+    manifest_file = output_directory / MANIFEST_NAME
+    try:
+        if manifest_file.is_file():
+            manifest = verify_manifest(parse_manifest(manifest_file.read_bytes()), profile)
+            published = {entry.name for entry in output_directory.iterdir()}
+            return published == set(manifest.file_names) | {MANIFEST_NAME}
+    except (StemProfileError, OSError):
+        return False
+    if profile.accepts_manifestless_results:
+        return _is_complete_existing_result(output_directory, profile.file_names)
+    return False
+
+
 def separate_audio(
     audio_file: str | Path,
     output_directory: str | Path,
     *,
+    profile: StemProfile = LEGACY_PROFILE,
     runner: Callable[[Sequence[str]], None] = run_demucs,
     cuda_probe: Callable[[], bool] = cuda_is_available,
+    specialist: SpecialistRunner | None = None,
+    thresholds: RoleThresholds | None = None,
+    cancellation=None,
 ) -> Path:
     """Separate one song and atomically create the requested result directory."""
+    if not profile.enabled:
+        raise DemucsSeparationError(
+            "profile.disabled",
+            f"The {profile.display_name} profile is not available in this build.",
+            "Choose an enabled profile; a profile stays disabled until its specialist is admitted.",
+        )
+    if profile.specialist_input is not None:
+        if specialist is None:
+            raise DemucsSeparationError(
+                "profile.specialist_missing",
+                f"The {profile.display_name} profile requires a specialist runner.",
+                "Admit and pass the registered specialist before separating with this profile.",
+            )
+        if thresholds is None or not thresholds.calibrated:
+            raise DemucsSeparationError(
+                "profile.thresholds_uncalibrated",
+                f"The {profile.display_name} profile has no calibrated role thresholds.",
+                "Calibrate reconstruction, audibility, and absence limits before enabling this profile.",
+            )
     audio_file = Path(audio_file).resolve()
     output_directory = Path(output_directory).resolve()
     if not audio_file.is_file():
@@ -213,7 +384,7 @@ def separate_audio(
             "The output directory must have a directory name.",
             "Choose a named output directory and retry.",
         )
-    if _is_complete_existing_result(output_directory):
+    if _is_reusable_existing_result(output_directory, profile):
         return output_directory
     output_directory.parent.mkdir(parents=True, exist_ok=True)
 
@@ -222,7 +393,7 @@ def separate_audio(
         staging.mkdir()
         device = "cuda" if cuda_probe() else "cpu"
         try:
-            runner(_command(audio_file, staging, device))
+            runner(_command(audio_file, staging, device, profile))
         except subprocess.CalledProcessError as cuda_error:
             if device != "cuda":
                 raise DemucsSeparationError(
@@ -232,7 +403,7 @@ def separate_audio(
                 ) from cuda_error
             _reset_directory(staging)
             try:
-                runner(_command(audio_file, staging, "cpu"))
+                runner(_command(audio_file, staging, "cpu", profile))
             except subprocess.CalledProcessError as cpu_error:
                 raise DemucsSeparationError(
                     "demucs.inference_failed",
@@ -242,5 +413,38 @@ def separate_audio(
                     "Inspect the CUDA and Demucs diagnostics before retrying.",
                 ) from cpu_error
 
-        files = _read_stems(staging, audio_file)
-        return publish_atomic(output_directory.parent, output_directory.name, files)
+        raw_paths = _raw_output_paths(staging, audio_file, profile)
+        role_paths: dict[str, Path] = {}
+        absent_lanes: dict[str, str] = {}
+        if profile.specialist_input is not None:
+            roles = Path(temporary) / "roles"
+            roles.mkdir()
+            specialist(raw_paths[profile.specialist_input], roles)
+            missing = [
+                lane.file_name
+                for lane in profile.lanes
+                if lane.role_group and not (roles / lane.file_name).is_file()
+            ]
+            if missing:
+                raise DemucsSeparationError(
+                    "specialist.output_incomplete",
+                    f"The specialist did not produce the required role stems: {', '.join(missing)}.",
+                    "Discard the incomplete result, inspect specialist diagnostics, and retry.",
+                )
+            role_paths = {
+                lane.lane_id: roles / lane.file_name for lane in profile.lanes if lane.role_group
+            }
+            absent_lanes = _validate_roles(
+                profile, raw_paths[profile.specialist_input], role_paths, thresholds
+            )
+
+        files = _assemble_lanes(profile, raw_paths, role_paths)
+        if not profile.accepts_manifestless_results:
+            manifest = build_manifest(profile, absent_lanes=absent_lanes)
+            files[MANIFEST_NAME] = manifest.to_json_bytes()
+        return publish_atomic(
+            output_directory.parent,
+            output_directory.name,
+            files,
+            cancellation=cancellation,
+        )
