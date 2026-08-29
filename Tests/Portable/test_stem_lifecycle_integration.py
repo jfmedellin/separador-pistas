@@ -91,7 +91,7 @@ class AutoOpenedResultDiscardTests(unittest.TestCase):
             input_file = Path(workspace) / "song.mp3"
             input_file.write_bytes(b"audio")
 
-            def separate(_input_file, result_directory):
+            def separate(_input_file, result_directory, **_options):
                 _write_stem_wavs(Path(result_directory))
                 return Path(result_directory)
 
@@ -128,7 +128,7 @@ class ManualLoadPreservationTests(unittest.TestCase):
             export_destination = Path(workspace) / "export"
             export_destination.mkdir()
 
-            def separate(_input_file, result_directory):
+            def separate(_input_file, result_directory, **_options):
                 raise AssertionError("separation must not run for a manual-only session")
 
             app = HeadlessApp(separate=separate)

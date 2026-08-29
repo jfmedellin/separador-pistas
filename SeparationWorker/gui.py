@@ -49,6 +49,38 @@ STEMS = (
 )
 STEM_ROWS = tuple((name.lower() + ".wav", name, color) for name, color in STEMS)
 STEM_ICONS = {"vocals.wav": "mic", "drums.wav": "drum", "bass.wav": "bass", "other.wav": "layers"}
+
+# Presentation for every lane a registered profile can publish. Unknown lanes
+# fall back to a readable label and the neutral colour rather than failing to
+# render, so a future profile never produces a blank row.
+LANE_COLORS = {
+    "vocals": "#A292A3",
+    "drums": "#B6927B",
+    "bass": "#87A987",
+    "lead_guitar": "#C09A6B",
+    "rhythm_guitar": "#7F94A8",
+    "other": "#8BA4B0",
+}
+LANE_ICONS = {"vocals": "mic", "drums": "drum", "bass": "bass"}
+LANE_FALLBACK_COLOR = "#8BA4B0"
+LANE_FALLBACK_ICON = "layers"
+ABSENT_LANE_SUFFIX = "NOT IN THIS TRACK"
+
+
+def lane_id(stem_name: str) -> str:
+    return Path(stem_name).stem.lower()
+
+
+def lane_label(stem_name: str) -> str:
+    return lane_id(stem_name).replace("_", " ").upper()
+
+
+def lane_color(stem_name: str) -> str:
+    return LANE_COLORS.get(lane_id(stem_name), LANE_FALLBACK_COLOR)
+
+
+def lane_icon(stem_name: str) -> str:
+    return LANE_ICONS.get(lane_id(stem_name), LANE_FALLBACK_ICON)
 APP_NAME = "Stemslayer"
 
 NAV_HEIGHT = 60
@@ -170,6 +202,7 @@ class MixerViewModel:
     playing: bool = False
     settings: MixerSnapshot = MixerSnapshot(tuple())
     preview_frame: int | None = None
+    absent_names: tuple[str, ...] = ()
 
     @classmethod
     def from_controller_state(cls, state: MixerState, *, preview_frame: int | None = None):
@@ -180,17 +213,41 @@ class MixerViewModel:
         if preview_frame is not None:
             preview_frame = max(0, min(int(preview_frame), frame_count))
         return cls(
+            stem_names=tuple(state.lane_names),
             position=position,
             frame_count=frame_count,
             sample_rate=sample_rate,
             playing=bool(state.playing),
             settings=state.settings,
             preview_frame=preview_frame,
+            absent_names=tuple(state.absent_lanes),
         )
 
     @property
     def lane_names(self) -> tuple[str, ...]:
         return self.stem_names
+
+    def is_absent(self, stem_name: str) -> bool:
+        """Report whether a lane was declared absent for this track."""
+        return lane_id(stem_name) in self.absent_names
+
+    @property
+    def lane_rows(self) -> tuple[tuple[str, str, str, bool], ...]:
+        """Return one renderable row per published lane, in profile order.
+
+        An absent lane keeps its row and is labeled. Hiding it would erase the
+        fact that this track simply has no lead guitar, which is exactly the
+        thing the user opened the mixer to find out.
+        """
+        return tuple(
+            (
+                name,
+                f"{lane_label(name)} · {ABSENT_LANE_SUFFIX}" if self.is_absent(name) else lane_label(name),
+                lane_color(name),
+                self.is_absent(name),
+            )
+            for name in self.stem_names
+        )
 
     @property
     def duration_seconds(self) -> float:
