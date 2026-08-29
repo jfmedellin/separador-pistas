@@ -62,6 +62,30 @@ class GuiControllerTests(unittest.TestCase):
         self.assertEqual("4 stems are ready", controller.state.headline)
         self.assertEqual(str(Path("exports/song-stems")), controller.state.detail)
 
+    def test_dispatches_successful_result_path_once_through_injected_callback(self):
+        results = []
+
+        def separate(_input_file, output_directory):
+            return Path(output_directory)
+
+        queue = QueuedExecution()
+        controller = SeparationController(
+            separate=separate,
+            start_worker=queue.start_worker,
+            dispatch=queue.dispatch,
+            on_success=results.append,
+        )
+        controller.set_input_file("song.mp3")
+        controller.set_output_directory("exports/song-stems")
+
+        self.assertTrue(controller.start())
+        queue.workers.pop()()
+        self.assertEqual([], results)
+        queue.events.pop()()
+
+        self.assertEqual([Path("exports/song-stems")], results)
+        self.assertEqual("success", controller.state.phase)
+
     def test_prevents_duplicate_runs_and_selection_changes_while_running(self):
         controller, queue, _states = self.configured(lambda _input, output: Path(output))
 

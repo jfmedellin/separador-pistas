@@ -35,11 +35,13 @@ class SeparationController:
         start_worker: Callable[[Callable[[], None]], None] = _start_thread,
         dispatch: Callable[[Callable[[], None]], None] = lambda callback: callback(),
         on_change: Callable[[GuiState], None] = lambda _state: None,
+        on_success: Callable[[Path], None] = lambda _result: None,
     ):
         self._separate = separate
         self._start_worker = start_worker
         self._dispatch = dispatch
         self._on_change = on_change
+        self._on_success = on_success
         self.state = GuiState()
 
     def _set_state(self, state: GuiState) -> None:
@@ -118,6 +120,12 @@ class SeparationController:
                 detail=str(result),
             )
         )
+        try:
+            self._on_success(result)
+        except Exception:
+            # A view transition must not turn a completed separation into a
+            # failed operation if an injected UI callback raises.
+            return
 
     def _finish_error(self, cause: str, recovery: str) -> None:
         self._set_state(
