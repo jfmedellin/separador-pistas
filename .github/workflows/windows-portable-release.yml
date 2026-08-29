@@ -11,47 +11,69 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    timeout-minutes: 60
 
     steps:
       - name: Check out the tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python x64
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.14"
           architecture: x64
 
-      - name: Create the CPU-only build environment
+      - name: Build and stage the CPU portable bundle
         shell: pwsh
         run: |
-          python -m venv .venv-portable
-          $python = (Resolve-Path ".\.venv-portable\Scripts\python.exe").Path
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $assets = Join-Path $env:RUNNER_TEMP "stemslayer-release-assets"
+          New-Item -ItemType Directory -Path $assets -Force | Out-Null
+
+          python -m venv .venv-portable-cpu
+          $python = (Resolve-Path ".\.venv-portable-cpu\Scripts\python.exe").Path
           & $python -m pip install --upgrade pip
           & $python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
           & $python -m pip install -r Tools\requirements-portable.txt
-
-      - name: Run the portable test suite
-        shell: pwsh
-        run: |
-          $python = (Resolve-Path ".\.venv-portable\Scripts\python.exe").Path
           & $python -m unittest discover -s Tests\Portable -v
           & $python -m compileall -q SeparationWorker Tests\Portable
+          .\Tools\build_portable.ps1 -Version $version -Variant cpu -PythonPath $python
 
-      - name: Build and smoke-test the portable bundle
+          Copy-Item "dist\Stemslayer-v$version-windows-x64-cpu-portable.zip*" $assets
+          Remove-Item .venv-portable-cpu, build, dist -Recurse -Force
+
+      - name: Build and stage the NVIDIA CUDA portable bundle
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $version = $env:GITHUB_REF_NAME.Substring(1)
-          $python = (Resolve-Path ".\.venv-portable\Scripts\python.exe").Path
-          .\Tools\build_portable.ps1 -Version $version -PythonPath $python
+          $assets = Join-Path $env:RUNNER_TEMP "stemslayer-release-assets"
 
-      - name: Publish ZIP and SHA-256 checksum
+          python -m venv .venv-portable-cuda
+          $python = (Resolve-Path ".\.venv-portable-cuda\Scripts\python.exe").Path
+          & $python -m pip install --upgrade pip
+          & $python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+          & $python -m pip install -r Tools\requirements-portable.txt
+          & $python -m unittest discover -s Tests\Portable -v
+          & $python -m compileall -q SeparationWorker Tests\Portable
+          .\Tools\build_portable.ps1 -Version $version -Variant cuda -PythonPath $python
+
+          Copy-Item "dist\Stemslayer-v$version-windows-x64-cuda-portable.zip*" $assets
+
+      - name: Publish CPU and CUDA ZIPs with SHA-256 checksums
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $tag = $env:GITHUB_REF_NAME
-          $version = $tag.Substring(1)
-          $zip = "dist\Stemslayer-v$version-windows-x64-portable.zip"
-          $checksum = "$zip.sha256"
-          gh release create $tag $zip $checksum --repo $env:GITHUB_REPOSITORY --verify-tag --title "Stemslayer $tag" --generate-notes
+          $assetsDirectory = Join-Path $env:RUNNER_TEMP "stemslayer-release-assets"
+          $assets = Get-ChildItem -LiteralPath $assetsDirectory -File | Sort-Object Name | Select-Object -ExpandProperty FullName
+          if ($assets.Count -ne 4) {
+            throw "Expected two portable ZIPs and two checksums; found $($assets.Count) assets."
+          }
+          gh release create $tag @assets --repo $env:GITHUB_REPOSITORY --verify-tag --title "Stemslayer $tag" --generate-notes
