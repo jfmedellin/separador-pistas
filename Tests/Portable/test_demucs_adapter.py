@@ -79,7 +79,7 @@ class DemucsAdapterTests(unittest.TestCase):
                 with patch("SeparationWorker.demucs_adapter.sys.frozen", True, create=True):
                     command = _command(Path("song.mp3"), Path("staging"), "cpu")
 
-        self.assertEqual(str(worker), command[0])
+        self.assertEqual(str(worker.resolve()), command[0])
         self.assertEqual(MODEL_NAME, command[command.index("--name") + 1])
         self.assertEqual("cpu", command[command.index("--device") + 1])
 
