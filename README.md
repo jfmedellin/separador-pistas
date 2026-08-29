@@ -14,7 +14,7 @@ The recommended distribution is the **Windows x64 portable ZIP** published in [G
 
 Both portable bundles contain the GUI and their internal `StemslayerWorker.exe`; neither requires Python, Git, or a separate audio/Demucs installation. The CUDA build includes the CUDA runtime but requires a compatible NVIDIA GPU and current NVIDIA driver. The CPU build requires no NVIDIA hardware. The first separation downloads the `htdemucs` model weights. Later runs reuse the local model cache and reuse complete results for the same source when available. Internet access is required only for that first model download.
 
-Use the CUDA build when possible: Demucs inference is substantially faster on a supported NVIDIA GPU. The tradeoff is download size—the CUDA ZIP is roughly 2 GB because it carries the NVIDIA runtime, while the CPU ZIP is roughly 210 MB. The CPU build is the compatibility option and can take several minutes per song.
+Use the CUDA build when possible: Demucs inference is substantially faster on a supported NVIDIA GPU. The tradeoff is download size—the CUDA ZIP is roughly 2 GB because it carries the NVIDIA runtime, while the CPU ZIP is roughly 210 MB. The CPU build is the compatibility option and can take several minutes per song. On machines with at least eight logical processors, the CPU worker uses two coordinated chunk workers and 10% overlap to reduce separation time without changing the four-stem model. The lower overlap is a balanced performance tradeoff and can slightly reduce quality at chunk boundaries compared with Demucs' 25% default.
 
 ## Development setup
 
@@ -90,7 +90,7 @@ python -m venv .venv-portable
 .\.venv-portable\Scripts\python.exe -m pip install --upgrade pip
 .\.venv-portable\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
 .\.venv-portable\Scripts\python.exe -m pip install -r .\Tools\requirements-portable.txt
-.\Tools\build_portable.ps1 -Version 1.1.1 -Variant cpu -PythonPath (Resolve-Path .\.venv-portable\Scripts\python.exe)
+.\Tools\build_portable.ps1 -Version 1.1.2 -Variant cpu -PythonPath (Resolve-Path .\.venv-portable\Scripts\python.exe)
 ```
 
 For the NVIDIA CUDA variant, install PyTorch from the CUDA 13.0 index instead and select the CUDA build contract:
@@ -100,7 +100,7 @@ python -m venv .venv-portable-cuda
 .\.venv-portable-cuda\Scripts\python.exe -m pip install --upgrade pip
 .\.venv-portable-cuda\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
 .\.venv-portable-cuda\Scripts\python.exe -m pip install -r .\Tools\requirements-portable.txt
-.\Tools\build_portable.ps1 -Version 1.1.1 -Variant cuda -PythonPath (Resolve-Path .\.venv-portable-cuda\Scripts\python.exe)
+.\Tools\build_portable.ps1 -Version 1.1.2 -Variant cuda -PythonPath (Resolve-Path .\.venv-portable-cuda\Scripts\python.exe)
 ```
 
 The script rejects a PyTorch runtime that does not match the requested variant, cleans `build/` and `dist/`, builds the one-folder GUI and worker, runs frozen entrypoint smoke tests, creates the variant-specific ZIP, and writes the matching `.sha256` file. Both ZIPs deliberately exclude model weights; `htdemucs` is acquired on first use.

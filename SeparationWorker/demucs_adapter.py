@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,9 @@ MODEL_NAME = "htdemucs"
 WORKER_EXECUTABLE = "StemslayerWorker.exe"
 DIAGNOSTIC_MAX_LINES = 6
 DIAGNOSTIC_MAX_CHARACTERS = 800
+CPU_JOBS = 2
+CPU_JOBS_MIN_LOGICAL_PROCESSORS = 8
+CPU_OVERLAP = 0.1
 
 
 @dataclass(eq=False)
@@ -85,6 +89,9 @@ def run_demucs(command: Sequence[str]) -> None:
         "encoding": "utf-8",
         "errors": "replace",
     }
+    environment = _cpu_process_environment(command)
+    if environment is not None:
+        options["env"] = environment
     if getattr(sys, "frozen", False) and sys.platform == "win32":
         # The worker is a console executable so Demucs can be captured, but
         # it must not flash a console window over the GUI.
@@ -95,6 +102,46 @@ def run_demucs(command: Sequence[str]) -> None:
         list(command),
         **options,
     )
+
+
+def _option_value(command: Sequence[str], option: str) -> str | None:
+    try:
+        index = command.index(option)
+        return command[index + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def _cpu_jobs(logical_processors: int | None = None) -> int:
+    if logical_processors is None:
+        logical_processors = os.cpu_count() or 1
+    return CPU_JOBS if logical_processors >= CPU_JOBS_MIN_LOGICAL_PROCESSORS else 0
+
+
+def _cpu_thread_limit(jobs: int) -> int:
+    try:
+        import torch
+
+        available_threads = int(torch.get_num_threads())
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        available_threads = max(1, (os.cpu_count() or 1) // 2)
+    return max(1, available_threads // max(1, jobs))
+
+
+def _cpu_process_environment(command: Sequence[str]) -> dict[str, str] | None:
+    if _option_value(command, "--device") != "cpu":
+        return None
+    try:
+        jobs = int(_option_value(command, "--jobs") or "0")
+    except ValueError:
+        return None
+    if jobs <= 0:
+        return None
+    threads = str(_cpu_thread_limit(jobs))
+    environment = os.environ.copy()
+    environment["OMP_NUM_THREADS"] = threads
+    environment["MKL_NUM_THREADS"] = threads
+    return environment
 
 
 def frozen_worker_path() -> Path:
@@ -145,12 +192,21 @@ def _command(audio_file: Path, staging: Path, device: str) -> list[str]:
         command = [executable]
     else:
         command = [executable, "-m", "demucs.separate"]
+    device_options = []
+    if device == "cpu":
+        device_options = [
+            "--jobs",
+            str(_cpu_jobs()),
+            "--overlap",
+            str(CPU_OVERLAP),
+        ]
     return [
         *command,
         "--name",
         MODEL_NAME,
         "--device",
         device,
+        *device_options,
         "--out",
         str(staging),
         str(audio_file),
