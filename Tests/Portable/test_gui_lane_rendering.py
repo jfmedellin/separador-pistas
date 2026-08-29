@@ -17,7 +17,12 @@ try:
     import customtkinter as ctk
     from tkinterdnd2 import TkinterDnD
 
-    from SeparationWorker.gui import MixerViewModel, StemslayerApp
+    from SeparationWorker.gui import (
+        SEPARATION_CONTENT_TOP,
+        SEPARATION_VIEW_HEIGHT,
+        MixerViewModel,
+        StemslayerApp,
+    )
 
     GUI_IMPORT_ERROR = None
 except Exception as error:  # pragma: no cover - exercised only without a GUI stack
@@ -227,6 +232,41 @@ class ProfileSelectorTests(GuiAppFixture, unittest.TestCase):
         self.app._profile_selected("Nonexistent")
 
         self.assertEqual(LEGACY_PROFILE_ID, self.app.controller.state.profile_id)
+
+    def test_the_hero_copy_promises_the_selected_channel_count(self):
+        self.assertIn("Four clean channels", self.app.hero_headline.get())
+        self.assertIn("four clean local stems", self.app.hero_subtitle.get())
+
+        self.app._profile_selected("Metal")
+
+        self.assertIn("Six clean channels", self.app.hero_headline.get())
+        self.assertIn("six clean local stems", self.app.hero_subtitle.get())
+
+    def test_the_start_button_reports_the_selected_channel_count(self):
+        self.app._profile_selected("Metal")
+
+        self.assertEqual("Separate into 6 stems", self.app.action.cget("text"))
+
+    def test_every_profile_fits_inside_the_separation_window(self):
+        """The placed content clips instead of scrolling.
+
+        A profile whose content overflows silently hides the start button, so
+        the user cannot separate anything at all. This measures the tallest
+        profile rather than trusting an estimate.
+        """
+        self.app._show_view("separation")
+        for display_name in self.app._profile_choices:
+            with self.subTest(profile=display_name):
+                self.app._profile_selected(display_name)
+                self.root.update_idletasks()
+                bottom = SEPARATION_CONTENT_TOP + self.app._separation_center.winfo_reqheight()
+
+                self.assertLessEqual(
+                    bottom,
+                    SEPARATION_VIEW_HEIGHT,
+                    f"{display_name} content overflows the view by {bottom - SEPARATION_VIEW_HEIGHT}px "
+                    "and would hide the start button",
+                )
 
 
 if __name__ == "__main__":

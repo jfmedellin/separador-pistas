@@ -58,6 +58,19 @@ LANE_ICONS = {"vocals": "mic", "drums": "drum", "bass": "bass"}
 LANE_FALLBACK_COLOR = "#8BA4B0"
 LANE_FALLBACK_ICON = "layers"
 ABSENT_LANE_SUFFIX = "NOT IN THIS TRACK"
+CHANNEL_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six", 7: "Seven", 8: "Eight"}
+
+# The separation view places its content, so anything past the window bottom
+# is clipped with no scrollbar and the primary action becomes unreachable.
+# This height must fit the tallest profile's content plus a bottom margin
+# matching the top one; test_gui_lane_rendering measures and enforces it.
+SEPARATION_CONTENT_TOP = 30
+SEPARATION_VIEW_HEIGHT = 764
+MIXER_VIEW_HEIGHT = 720
+
+
+def channel_word(count: int) -> str:
+    return CHANNEL_WORDS.get(count, str(count))
 
 
 def lane_id(stem_name: str) -> str:
@@ -317,6 +330,8 @@ class StemslayerApp:
 
         self.status_headline = tk.StringVar()
         self.status_detail = tk.StringVar()
+        self.hero_headline = tk.StringVar()
+        self.hero_subtitle = tk.StringVar()
         self.mixer_headline = tk.StringVar(value="Choose a four-stem folder")
         self.mixer_detail = tk.StringVar(value="Load vocals.wav, drums.wav, bass.wav, and other.wav to begin.")
         self.mixer_time = tk.StringVar(value="00:00.00 / 00:00.00")
@@ -411,14 +426,17 @@ class StemslayerApp:
         shell.grid_rowconfigure(0, weight=1)
 
         center = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0, width=600)
-        center.place(relx=0.5, y=30, anchor="n")
+        center.place(relx=0.5, y=SEPARATION_CONTENT_TOP, anchor="n")
+        self._separation_center = center
 
         header = ctk.CTkFrame(center, fg_color=COLORS["window"], corner_radius=0)
         header.pack(fill="x")
-        ctk.CTkLabel(header, text="Four clean channels. One local pass.", text_color=COLORS["text"], font=("Segoe UI", 22, "bold")).pack()
+        ctk.CTkLabel(
+            header, textvariable=self.hero_headline, text_color=COLORS["text"], font=("Segoe UI", 22, "bold")
+        ).pack()
         ctk.CTkLabel(
             header,
-            text="Select your source audio, then split it into four clean local stems.",
+            textvariable=self.hero_subtitle,
             text_color=COLORS["muted"],
             font=("Segoe UI", 12),
         ).pack(pady=(6, 0))
@@ -526,7 +544,16 @@ class StemslayerApp:
         self.action.pack(side="right")
 
     def _build_chips(self, profile) -> None:
-        """Render one chip per lane the selected profile publishes."""
+        """Render one chip per lane the selected profile publishes.
+
+        The hero copy is written here too, so the promised channel count can
+        never drift from the chips actually shown.
+        """
+        word = channel_word(len(profile.lanes))
+        self.hero_headline.set(f"{word} clean channels. One local pass.")
+        self.hero_subtitle.set(
+            f"Select your source audio, then split it into {word.lower()} clean local stems."
+        )
         for child in self._chips_frame.winfo_children():
             child.destroy()
         for index in range(len(self._chip_lane_ids)):
@@ -934,13 +961,15 @@ class StemslayerApp:
         if view == "mixer":
             self.separation_view.grid_remove()
             self.mixer_view.grid(row=0, column=0, sticky="nsew")
-            self.root.geometry(f"1120x{720 + NAV_HEIGHT + 1}")
+            self.root.geometry(f"1120x{MIXER_VIEW_HEIGHT + NAV_HEIGHT + 1}")
             self.root.minsize(800, 621)
         else:
             self.mixer_view.grid_remove()
             self.separation_view.grid(row=0, column=0, sticky="nsew")
-            self.root.geometry(f"960x{620 + NAV_HEIGHT + 1}")
-            self.root.minsize(800, 621)
+            self.root.geometry(f"960x{SEPARATION_VIEW_HEIGHT + NAV_HEIGHT + 1}")
+            # The placed content clips instead of scrolling, so the window may
+            # not be shrunk below the height that keeps the action reachable.
+            self.root.minsize(800, SEPARATION_VIEW_HEIGHT + NAV_HEIGHT + 1)
         self._view = view
         self._set_active_tab(view)
 
