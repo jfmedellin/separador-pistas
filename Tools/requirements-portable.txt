@@ -1,5 +1,6 @@
-# Install torch from the CPU index before this file (see the release workflow):
-# python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+# Install torch before this file from the index matching the build variant:
+# CPU:  python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+# CUDA: python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
 demucs==4.1.0
 soundfile==0.13.1
 sounddevice==0.5.6

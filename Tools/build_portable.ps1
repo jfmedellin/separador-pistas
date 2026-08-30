@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = "1.1.0",
+    [string]$Version = "1.1.2",
+    [ValidateSet("cpu", "cuda")]
+    [string]$Variant = "cpu",
     [string]$PythonPath = ""
 )
 
@@ -22,6 +24,7 @@ function Resolve-BuildPython {
     }
 
     $candidates = @(
+        (Join-Path $projectRoot ".venv-portable-$Variant\Scripts\python.exe"),
         (Join-Path $projectRoot ".venv-portable\Scripts\python.exe"),
         (Join-Path $projectRoot ".venv\Scripts\python.exe")
     )
@@ -66,23 +69,33 @@ foreach ($directory in @($buildDirectory, $distDirectory)) {
 }
 New-Item -ItemType Directory -Path $buildDirectory, $distDirectory | Out-Null
 
-@'
+@"
 import importlib.metadata as metadata
 import sys
 import torch
 
-if torch.version.cuda is not None:
-    raise SystemExit("CPU-only PyTorch is required; this environment reports CUDA " + str(torch.version.cuda))
+variant = "$Variant"
+torch_version = metadata.version("torch")
+cuda_version = torch.version.cuda
+
+if torch_version.split("+")[0] != "2.13.0":
+    raise SystemExit("PyTorch 2.13.0 is required; found " + torch_version)
+if variant == "cpu" and cuda_version is not None:
+    raise SystemExit("CPU-only PyTorch is required; this environment reports CUDA " + str(cuda_version))
+if variant == "cuda" and cuda_version != "13.0":
+    raise SystemExit("The CUDA variant requires PyTorch cu130; this environment reports CUDA " + str(cuda_version))
 if metadata.version("demucs") != "4.1.0":
     raise SystemExit("Demucs 4.1.0 is required")
 print(sys.executable)
+print("variant=" + variant)
 print("torch=" + torch.__version__)
+print("cuda=" + str(cuda_version))
 print("demucs=" + metadata.version("demucs"))
-'@ | Set-Content -LiteralPath (Join-Path $buildDirectory "check_portable_environment.py") -Encoding utf8
+"@ | Set-Content -LiteralPath (Join-Path $buildDirectory "check_portable_environment.py") -Encoding utf8
 $pythonDetails = & $python (Join-Path $buildDirectory "check_portable_environment.py")
 $environmentExitCode = $LASTEXITCODE
 if ($environmentExitCode -ne 0) {
-    throw "The build Python must contain the CPU-only PyTorch wheel and Demucs 4.1.0. Create a portable environment with Tools\requirements-portable.txt first."
+    throw "The build Python does not satisfy the $Variant portable runtime contract. Install the matching PyTorch 2.13.0 wheel and Tools\requirements-portable.txt first."
 }
 $pythonDetails | ForEach-Object { Write-Host "  $_" }
 
@@ -115,7 +128,7 @@ Invoke-BuildStep "Running frozen entrypoint smoke tests..." {
     }
 }
 
-$archiveName = "Stemslayer-v$Version-windows-x64-portable.zip"
+$archiveName = "Stemslayer-v$Version-windows-x64-$Variant-portable.zip"
 $archivePath = Join-Path $distDirectory $archiveName
 $checksumPath = "$archivePath.sha256"
 if (Test-Path -LiteralPath $archivePath) {

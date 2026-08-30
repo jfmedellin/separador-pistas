@@ -16,6 +16,7 @@ from SeparationWorker.demucs_adapter import (
     WORKER_EXECUTABLE,
     DemucsSeparationError,
     _command,
+    _cpu_jobs,
     run_demucs,
     separate_audio,
 )
@@ -81,11 +82,59 @@ class DemucsAdapterTests(unittest.TestCase):
             errors="replace",
         )
 
+    def test_real_runner_coordinates_cpu_worker_threads(self):
+        command = [
+            "python",
+            "-m",
+            "demucs.separate",
+            "--device",
+            "cpu",
+            "--jobs",
+            "2",
+        ]
+        with patch("SeparationWorker.demucs_adapter._require_demucs_41"):
+            with patch("SeparationWorker.demucs_adapter._cpu_thread_limit", return_value=4):
+                with patch("SeparationWorker.demucs_adapter.subprocess.run") as process_run:
+                    run_demucs(command)
+
+        environment = process_run.call_args.kwargs["env"]
+        self.assertEqual("4", environment["OMP_NUM_THREADS"])
+        self.assertEqual("4", environment["MKL_NUM_THREADS"])
+
+    def test_cpu_parallelism_is_reserved_for_capable_machines(self):
+        self.assertEqual(0, _cpu_jobs(4))
+        self.assertEqual(2, _cpu_jobs(8))
+
     def test_development_command_runs_demucs_as_a_python_module(self):
         with patch("SeparationWorker.demucs_adapter.sys.frozen", False, create=True):
-            command = _command(Path("song.mp3"), Path("staging"), "cpu")
+            with patch("SeparationWorker.demucs_adapter.os.cpu_count", return_value=16):
+                command = _command(Path("song.mp3"), Path("staging"), "cpu")
 
         self.assertEqual([sys.executable, "-m", "demucs.separate"], command[:3])
+        self.assertEqual("2", command[command.index("--jobs") + 1])
+        self.assertEqual("0.1", command[command.index("--overlap") + 1])
+
+    def test_cpu_tuning_applies_to_every_profile_not_only_the_legacy_one(self):
+        """The model comes from the profile; the CPU tuning must not follow it.
+
+        These two arrived from different branches and meet in one command, so
+        nothing else proves a six-source profile still gets the tuning.
+        """
+        with patch("SeparationWorker.demucs_adapter.sys.frozen", False, create=True):
+            with patch("SeparationWorker.demucs_adapter.os.cpu_count", return_value=16):
+                command = _command(Path("song.mp3"), Path("staging"), "cpu", METAL_PROFILE)
+
+        self.assertEqual(METAL_PROFILE.primary_model, command[command.index("--name") + 1])
+        self.assertNotEqual(MODEL_NAME, METAL_PROFILE.primary_model)
+        self.assertEqual("2", command[command.index("--jobs") + 1])
+        self.assertEqual("0.1", command[command.index("--overlap") + 1])
+
+    def test_cuda_command_keeps_demucs_quality_defaults(self):
+        with patch("SeparationWorker.demucs_adapter.sys.frozen", False, create=True):
+            command = _command(Path("song.mp3"), Path("staging"), "cuda")
+
+        self.assertNotIn("--jobs", command)
+        self.assertNotIn("--overlap", command)
 
     def test_frozen_command_runs_the_sibling_worker_executable(self):
         with tempfile.TemporaryDirectory() as root:
@@ -97,9 +146,11 @@ class DemucsAdapterTests(unittest.TestCase):
                 with patch("SeparationWorker.demucs_adapter.sys.frozen", True, create=True):
                     command = _command(Path("song.mp3"), Path("staging"), "cpu")
 
-        self.assertEqual(str(worker), command[0])
+        self.assertEqual(str(worker.resolve()), command[0])
         self.assertEqual(MODEL_NAME, command[command.index("--name") + 1])
         self.assertEqual("cpu", command[command.index("--device") + 1])
+        self.assertEqual(str(_cpu_jobs()), command[command.index("--jobs") + 1])
+        self.assertEqual("0.1", command[command.index("--overlap") + 1])
 
     def test_frozen_command_fails_actionably_when_worker_is_missing(self):
         with tempfile.TemporaryDirectory() as root:

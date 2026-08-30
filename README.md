@@ -6,13 +6,15 @@ Stemslayer is a Windows-first desktop app for separating one song into four Demu
 
 The recommended distribution is the **Windows x64 portable ZIP** published in [GitHub Releases](https://github.com/jfmedellin/separador-pistas/releases). Do not use **Code → Download ZIP**; that downloads source code and still requires Python and the development dependencies.
 
-1. Download `Stemslayer-vX.Y.Z-windows-x64-portable.zip` and its `.sha256` checksum from Releases.
+1. Choose the portable ZIP for your computer and download its matching `.sha256` checksum from Releases:
+   - `Stemslayer-vX.Y.Z-windows-x64-cuda-portable.zip` — recommended for supported NVIDIA GPUs.
+   - `Stemslayer-vX.Y.Z-windows-x64-cpu-portable.zip` — universal fallback for computers without a supported NVIDIA GPU.
 2. Verify the checksum if desired, then extract the ZIP to a folder you can write to.
 3. Run `Stemslayer.exe` from the extracted folder.
 
-The portable bundle contains the GUI and its internal `StemslayerWorker.exe`; it does not require Python, Git, NVIDIA drivers, or a separate audio/Demucs installation. The first separation downloads the `htdemucs` model weights. Later runs reuse the local model cache and reuse complete results for the same source when available. Internet access is required only for that first model download.
+Both portable bundles contain the GUI and their internal `StemslayerWorker.exe`; neither requires Python, Git, or a separate audio/Demucs installation. The CUDA build includes the CUDA runtime but requires a compatible NVIDIA GPU and current NVIDIA driver. The CPU build requires no NVIDIA hardware. The first separation downloads the `htdemucs` model weights. Later runs reuse the local model cache and reuse complete results for the same source when available. Internet access is required only for that first model download.
 
-This first release is CPU-safe. A CUDA-capable GPU is not required, although CPU separation can take several minutes.
+Use the CUDA build when possible: Demucs inference is substantially faster on a supported NVIDIA GPU. The tradeoff is download size—the CUDA ZIP is roughly 2 GB because it carries the NVIDIA runtime, while the CPU ZIP is roughly 210 MB. The CPU build is the compatibility option and can take several minutes per song. On machines with at least eight logical processors, the CPU worker uses two coordinated chunk workers and 10% overlap to reduce separation time without changing the four-stem model. The lower overlap is a balanced performance tradeoff and can slightly reduce quality at chunk boundaries compared with Demucs' 25% default.
 
 ## Development setup
 
@@ -116,17 +118,27 @@ The GUI never performs Demucs inference, WAV analysis, or native audio writes on
 
 ## Build the portable release
 
-The release workflow builds on a Windows x64 runner when a `vX.Y.Z` tag is pushed. To build locally, create a CPU-only environment first:
+The release workflow builds and publishes both Windows x64 variants when a `vX.Y.Z` tag is pushed. To build the CPU variant locally:
 
 ```powershell
 python -m venv .venv-portable
 .\.venv-portable\Scripts\python.exe -m pip install --upgrade pip
 .\.venv-portable\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
 .\.venv-portable\Scripts\python.exe -m pip install -r .\Tools\requirements-portable.txt
-.\Tools\build_portable.ps1 -Version 1.1.0 -PythonPath (Resolve-Path .\.venv-portable\Scripts\python.exe)
+.\Tools\build_portable.ps1 -Version 1.1.2 -Variant cpu -PythonPath (Resolve-Path .\.venv-portable\Scripts\python.exe)
 ```
 
-The script cleans `build/` and `dist/`, builds the one-folder GUI and worker, runs frozen entrypoint smoke tests, creates `Stemslayer-v1.1.0-windows-x64-portable.zip`, and writes the matching `.sha256` file. The ZIP deliberately excludes model weights; `htdemucs` is acquired on first use.
+For the NVIDIA CUDA variant, install PyTorch from the CUDA 13.0 index instead and select the CUDA build contract:
+
+```powershell
+python -m venv .venv-portable-cuda
+.\.venv-portable-cuda\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-portable-cuda\Scripts\python.exe -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+.\.venv-portable-cuda\Scripts\python.exe -m pip install -r .\Tools\requirements-portable.txt
+.\Tools\build_portable.ps1 -Version 1.1.2 -Variant cuda -PythonPath (Resolve-Path .\.venv-portable-cuda\Scripts\python.exe)
+```
+
+The script rejects a PyTorch runtime that does not match the requested variant, cleans `build/` and `dist/`, builds the one-folder GUI and worker, runs frozen entrypoint smoke tests, creates the variant-specific ZIP, and writes the matching `.sha256` file. Both ZIPs deliberately exclude model weights; `htdemucs` is acquired on first use.
 
 ## Testing
 
@@ -144,7 +156,7 @@ The admission suite asserts that the shipped build denies Metal. It is expected 
 
 ## MVP boundaries
 
-This release intentionally excludes macOS support, panning, mixed-WAV export, looping, waveform zoom, output-device selection, and persisted mixer settings. It does **not** separate lead from rhythm guitar: the Metal profile ships disabled and no model is admitted. Demucs uses `htdemucs`; the portable release ships CPU-only PyTorch, while the source development setup may use CUDA. A complete separation retries once on CPU when a CUDA development run fails.
+This release intentionally excludes macOS support, panning, mixed-WAV export, looping, waveform zoom, output-device selection, and persisted mixer settings. It does **not** separate lead from rhythm guitar: the Metal profile ships disabled and no model is admitted. Demucs uses `htdemucs`. The CUDA portable automatically uses NVIDIA acceleration when available and retries once on CPU if CUDA inference fails; the CPU portable always uses CPU inference.
 
 Every claim here is verified on Windows only. No macOS, commercial-use, or multi-player claim is made or implied.
 
@@ -154,4 +166,4 @@ Every claim here is verified on Windows only. No macOS, commercial-use, or multi
 - Python 3.14 for source development and portable builds
 - A Windows output device for mixer playback
 
-`Tools/setup_windows.ps1` installs the pinned Windows development audio, Demucs, GUI, and native drag-and-drop dependencies into `.venv`. `Tools/requirements-portable.txt` contains the non-PyTorch portable dependencies; the CPU-only PyTorch wheel is installed from the official CPU index in the release workflow.
+`Tools/setup_windows.ps1` installs the pinned Windows development audio, Demucs, GUI, and native drag-and-drop dependencies into `.venv`. `Tools/requirements-portable.txt` contains the non-PyTorch portable dependencies; the release workflow installs the CPU and CUDA PyTorch wheels from their matching official indexes.

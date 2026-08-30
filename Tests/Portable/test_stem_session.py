@@ -63,7 +63,7 @@ class StemSessionTests(unittest.TestCase):
         session = StemSession.load(self.folder)
 
         self.assertEqual(self.folder.resolve(), session.folder)
-        self.assertEqual(tuple(self.folder / name for name in STEM_NAMES), session.paths)
+        self.assertEqual(tuple((self.folder / name).resolve() for name in STEM_NAMES), session.paths)
         self.assertEqual((8_000, 1, frame_count), (session.sample_rate, session.channels, session.frame_count))
         self.assertEqual(len(STEM_NAMES), len(session.peaks))
         self.assertTrue(all(len(envelope) == PEAK_BIN_COUNT for envelope in session.peaks))
