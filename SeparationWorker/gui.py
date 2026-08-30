@@ -8,6 +8,7 @@ import threading
 import tkinter as tk
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
 
@@ -20,6 +21,7 @@ from SeparationWorker.engine.mixer import MixerSnapshot
 from SeparationWorker.engine.stem_profile import LEGACY_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.gui_controller import GuiState, SeparationController
+from SeparationWorker.history import HistoryStore, LibraryState, SplitLibraryController, TrackRecord
 from SeparationWorker.mixer_controller import MixerController, MixerState
 
 
@@ -431,6 +433,8 @@ class StemslayerApp:
         self._mixer_model = MixerViewModel()
         self._syncing_controls = False
         self._cache_directories: list[Path] = []
+        self._library_state = LibraryState()
+        self._profile_dialog = None
         self.export_overlay: ctk.CTkFrame | None = None
 
         self.status_headline = tk.StringVar()
@@ -445,14 +449,22 @@ class StemslayerApp:
         self._master_percent_before_mute = 100
 
         self._build()
+        self.mixer_controller = MixerController(
+            dispatch=self._events.put,
+            on_change=self._render_mixer_state,
+        )
         self.controller = SeparationController(
             dispatch=self._events.put,
             on_change=self._render_state,
             on_success=self._separation_succeeded,
         )
-        self.mixer_controller = MixerController(
+        self.history_store = HistoryStore()
+        self.history_store.recover_unfinished()
+        self.library_controller = SplitLibraryController(
+            self.history_store,
             dispatch=self._events.put,
-            on_change=self._render_mixer_state,
+            on_change=self._render_library,
+            on_success=self._library_succeeded,
         )
         self._render_state(self.controller.state)
         self._render_mixer_state(self.mixer_controller.state)
@@ -460,6 +472,9 @@ class StemslayerApp:
         self.root.after(50, self._drain_events)
         threading.Thread(
             target=stem_cache.sweep_orphans, name="stemslayer-stem-cache-sweep", daemon=True
+        ).start()
+        threading.Thread(
+            target=self._validate_library, name="stemslayer-library-validation", daemon=True
         ).start()
 
     def _build(self) -> None:
@@ -583,7 +598,8 @@ class StemslayerApp:
             widget.bind("<Button-1>", lambda _event: self._pick_input())
         self._register_drop_zone(dropzone)
 
-        ctk.CTkLabel(center, text="PROFILE", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
+        profile_label = ctk.CTkLabel(center, text="PROFILE", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w")
+        profile_label.pack(
             fill="x", pady=(24, 6)
         )
         # available_profiles() is static so the selector can be built before
@@ -607,7 +623,8 @@ class StemslayerApp:
         )
         self.profile_selector.pack(fill="x")
 
-        ctk.CTkLabel(center, text="CHANNELS TO EXTRACT", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
+        channels_label = ctk.CTkLabel(center, text="CHANNELS TO EXTRACT", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w")
+        channels_label.pack(
             fill="x", pady=(18, 6)
         )
         self._chips_frame = ctk.CTkFrame(center, fg_color="transparent")
@@ -650,6 +667,167 @@ class StemslayerApp:
             height=40,
         )
         self.action.pack(side="right")
+        # The durable empty state only asks for a song. Profile selection moves
+        # to the compact dialog opened after file selection.
+        for legacy_control in (
+            profile_label,
+            self.profile_selector,
+            channels_label,
+            self._chips_frame,
+            self.status_banner,
+            footer,
+        ):
+            legacy_control.pack_forget()
+        self._build_library_view(shell)
+
+    def _build_library_view(self, shell) -> None:
+        panel = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0, width=820)
+        self._library_panel = panel
+
+        header = ctk.CTkFrame(panel, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 18))
+        copy = ctk.CTkFrame(header, fg_color="transparent")
+        copy.pack(side="left")
+        ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=("Segoe UI", 22, "bold"), anchor="w").pack(fill="x")
+        ctk.CTkLabel(copy, text="Stored locally. Open ready stems without separating again.", text_color=COLORS["muted"], font=("Segoe UI", 11), anchor="w").pack(fill="x", pady=(4, 0))
+        ctk.CTkButton(
+            header, text="Add song", command=self._pick_input, width=100, height=36,
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["accent_text"], font=("Segoe UI", 11, "bold"),
+        ).pack(side="right")
+
+        controls = ctk.CTkFrame(panel, fg_color=COLORS["surface"], corner_radius=10)
+        controls.pack(fill="x", pady=(0, 12))
+        self.library_search = ctk.CTkEntry(
+            controls, placeholder_text="Search title or artist", width=280,
+            fg_color=COLORS["field"], border_color=COLORS["line"], text_color=COLORS["text"],
+        )
+        self.library_search.pack(side="left", padx=10, pady=10)
+        self.library_search.bind("<KeyRelease>", lambda _event: self._library_query())
+        profiles = ["All profiles"] + [profile.display_name for profile in SeparationController.available_profiles()]
+        self.library_profile_filter = ctk.CTkOptionMenu(
+            controls, values=profiles, command=lambda _value: self._library_query(), width=150,
+            fg_color=COLORS["field"], button_color=COLORS["line_strong"], button_hover_color=COLORS["line"],
+        )
+        self.library_profile_filter.pack(side="left", padx=(0, 8), pady=10)
+        self.library_status_filter = ctk.CTkOptionMenu(
+            controls,
+            values=["All statuses", "Ready", "Processing", "Failed", "Interrupted", "Unavailable"],
+            command=lambda _value: self._library_query(), width=130,
+            fg_color=COLORS["field"], button_color=COLORS["line_strong"], button_hover_color=COLORS["line"],
+        )
+        self.library_status_filter.pack(side="left", padx=(0, 8), pady=10)
+        self.library_sort = ctk.CTkOptionMenu(
+            controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(), width=110,
+            fg_color=COLORS["field"], button_color=COLORS["line_strong"], button_hover_color=COLORS["line"],
+        )
+        self.library_sort.pack(side="right", padx=10, pady=10)
+
+        self.library_rows = ctk.CTkScrollableFrame(
+            panel, fg_color=COLORS["window"], corner_radius=0, height=560
+        )
+        self.library_rows.pack(fill="both", expand=True)
+
+    def _library_query(self) -> None:
+        if not hasattr(self, "library_controller"):
+            return
+        profile_name = self.library_profile_filter.get()
+        profile_id = self._profile_choices.get(profile_name, "all")
+        status = self.library_status_filter.get().lower()
+        status = "all" if status == "all statuses" else status
+        sort = {"Newest": "created_at", "Title": "title", "Duration": "duration"}.get(
+            self.library_sort.get(), "created_at"
+        )
+        self.library_controller.set_query(
+            search=self.library_search.get(), profile_id=profile_id, status=status, sort_by=sort
+        )
+
+    def _render_library(self, state: LibraryState) -> None:
+        if self._closed:
+            return
+        self._library_state = state
+        has_catalog = bool(self.history_store.query()) if hasattr(self, "history_store") else bool(state.tracks)
+        if has_catalog:
+            self._separation_center.place_forget()
+            self._library_panel.place(relx=0.5, y=24, anchor="n")
+        else:
+            self._library_panel.place_forget()
+            self._separation_center.place(relx=0.5, y=SEPARATION_CONTENT_TOP, anchor="n")
+        for child in self.library_rows.winfo_children():
+            child.destroy()
+        if has_catalog and not state.tracks:
+            ctk.CTkLabel(
+                self.library_rows, text="No songs match these filters.",
+                text_color=COLORS["muted"], font=("Segoe UI", 11),
+            ).pack(pady=36)
+            return
+        profile_names = {profile.profile_id: profile.display_name for profile in SeparationController.available_profiles()}
+        for record in state.tracks:
+            row = ctk.CTkFrame(
+                self.library_rows, fg_color=COLORS["surface"], corner_radius=10,
+                border_width=1, border_color=COLORS["line"],
+            )
+            row.pack(fill="x", pady=(0, 8))
+            body = ctk.CTkFrame(row, fg_color="transparent")
+            body.pack(fill="x", padx=14, pady=12)
+            title = ctk.CTkLabel(
+                body, text=record.title, text_color=COLORS["text"],
+                font=("Segoe UI", 12, "bold"), anchor="w", width=210,
+            )
+            title.pack(side="left")
+            artist = record.artist or "Unknown artist"
+            ctk.CTkLabel(
+                body, text=artist, text_color=COLORS["muted"], font=("Segoe UI", 10),
+                anchor="w", width=145,
+            ).pack(side="left", padx=(8, 0))
+            detail = (
+                f"{profile_names.get(record.profile_id, record.profile_id)}  ·  "
+                f"{self._track_duration(record)}  ·  BPM {record.bpm or '—'}  ·  "
+                f"Key {record.musical_key or '—'}  ·  {record.genre or '—'}  ·  {self._local_date(record)}"
+            )
+            ctk.CTkLabel(
+                body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 9),
+                anchor="w", width=235,
+            ).pack(side="left", padx=(8, 0))
+            color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
+            ctk.CTkLabel(
+                body, text=record.status.upper(), text_color=color, font=("Segoe UI", 9, "bold"), width=78,
+            ).pack(side="left", padx=(6, 0))
+            if record.status == "ready":
+                ctk.CTkButton(
+                    body, text="Open", width=58, height=28, command=lambda track_id=record.track_id: self._open_library_track(track_id),
+                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
+                ).pack(side="left", padx=(6, 0))
+            elif record.status in {"failed", "interrupted", "unavailable"}:
+                ctk.CTkButton(
+                    body, text="Retry", width=58, height=28, command=lambda track_id=record.track_id: self.library_controller.retry(track_id),
+                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
+                ).pack(side="left", padx=(6, 0))
+            ctk.CTkButton(
+                body, text="Remove", width=62, height=28, command=lambda track_id=record.track_id: self._remove_library_track(track_id),
+                fg_color="transparent", hover_color=COLORS["field"], text_color=COLORS["muted"],
+                state="disabled" if record.status in {"preparing", "processing"} else "normal",
+            ).pack(side="right", padx=(6, 0))
+            if record.error_detail:
+                ctk.CTkLabel(
+                    row, text=record.error_detail, text_color=COLORS["muted"], font=("Segoe UI", 9),
+                    anchor="w", justify="left", wraplength=720,
+                ).pack(fill="x", padx=14, pady=(0, 10))
+
+    @staticmethod
+    def _track_duration(record: TrackRecord) -> str:
+        return format_time(record.duration_seconds).split(".")[0] if record.duration_seconds else "—"
+
+    @staticmethod
+    def _local_date(record: TrackRecord) -> str:
+        try:
+            return datetime.fromisoformat(record.created_at_utc.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+        except ValueError:
+            return "—"
+
+    def _validate_library(self) -> None:
+        self.history_store.validate_ready()
+        self._events.put(self.library_controller.refresh)
 
     def _build_chips(self, profile) -> None:
         """Render one chip per lane the selected profile publishes.
@@ -704,7 +882,7 @@ class StemslayerApp:
     def _drop_input(self, event) -> str:
         paths = parse_drop_paths(event.data, self.root.tk.splitlist)
         if paths:
-            self.controller.set_input_file(paths[0])
+            self._choose_profile(paths[0])
         return getattr(event, "action", "copy")
 
     def _build_mixer_view(self) -> None:
@@ -1024,7 +1202,86 @@ class StemslayerApp:
             parent=self.root, title="Choose input audio", filetypes=(("Audio files", "*.wav *.mp3 *.flac *.m4a *.ogg"), ("All files", "*.*"))
         )
         if selected:
-            self.controller.set_input_file(selected)
+            self._choose_profile(selected)
+
+    def _choose_profile(self, source_path: str) -> None:
+        """Ask for the separation pipeline only after a source was chosen."""
+        if self._profile_dialog is not None and self._profile_dialog.winfo_exists():
+            self._profile_dialog.destroy()
+        dialog = ctk.CTkToplevel(self.root)
+        self._profile_dialog = dialog
+        dialog.title("Choose split profile")
+        dialog.geometry("460x360")
+        dialog.resizable(False, False)
+        dialog.configure(fg_color=COLORS["surface"])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        body = ctk.CTkFrame(dialog, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=22, pady=22)
+        ctk.CTkLabel(
+            body, text="Choose a split profile", text_color=COLORS["text"],
+            font=("Segoe UI", 17, "bold"), anchor="w",
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            body, text=Path(source_path).name, text_color=COLORS["muted"],
+            font=("Segoe UI", 10), anchor="w",
+        ).pack(fill="x", pady=(4, 14))
+        for profile in SeparationController.available_profiles():
+            row = ctk.CTkFrame(body, fg_color=COLORS["field"], corner_radius=9)
+            row.pack(fill="x", pady=(0, 8))
+            copy = ctk.CTkFrame(row, fg_color="transparent")
+            copy.pack(side="left", fill="x", expand=True, padx=12, pady=10)
+            ctk.CTkLabel(
+                copy, text=profile.display_name, text_color=COLORS["text"],
+                font=("Segoe UI", 11, "bold"), anchor="w",
+            ).pack(fill="x")
+            note = profile.note or f"{len(profile.lanes)} stems"
+            if not profile.enabled:
+                probe = SeparationController(profile=profile)
+                note = probe.state.profile_remediation
+            ctk.CTkLabel(
+                copy, text=note, text_color=COLORS["muted"], font=("Segoe UI", 9),
+                anchor="w", justify="left", wraplength=300,
+            ).pack(fill="x", pady=(2, 0))
+            ctk.CTkButton(
+                row, text="Choose" if profile.enabled else "Unavailable", width=88, height=30,
+                state="normal" if profile.enabled else "disabled",
+                command=lambda profile_id=profile.profile_id: self._confirm_library_add(source_path, profile_id),
+                fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+                text_color=COLORS["accent_text"], text_color_disabled=COLORS["disabled"],
+            ).pack(side="right", padx=10)
+
+    def _confirm_library_add(self, source_path: str, profile_id: str) -> None:
+        if self._profile_dialog is not None:
+            self._profile_dialog.destroy()
+            self._profile_dialog = None
+        try:
+            self.library_controller.add(source_path, profile_id)
+        except Exception as error:
+            self.status_headline.set("Could not add song")
+            self.status_detail.set(str(error))
+
+    def _open_library_track(self, track_id: str) -> None:
+        record = self.library_controller.open(track_id)
+        if record is not None:
+            self._open_mixer_folder(record.result_directory, title=record.title)
+
+    def _library_succeeded(self, record: TrackRecord) -> None:
+        self._open_mixer_folder(record.result_directory, title=record.title)
+
+    def _remove_library_track(self, track_id: str) -> None:
+        def release(record: TrackRecord) -> None:
+            folder = self.mixer_controller.state.folder
+            if folder is None:
+                return
+            try:
+                active = Path(folder).resolve() == record.result_directory.resolve()
+            except OSError:
+                active = Path(folder) == record.result_directory
+            if active:
+                self.mixer_controller.unload()
+
+        self.library_controller.remove(track_id, release=release)
 
     def _pick_stems_folder(self) -> None:
         selected = filedialog.askdirectory(parent=self.root, title="Choose a folder with published WAV stems")

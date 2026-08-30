@@ -36,14 +36,15 @@ hiddenimports = [
     "torch.nn.modules",
     "torch.utils",
     "demucs.separate",
+    "mutagen",
     "_soundfile_data",
     "_sounddevice_data",
 ]
 
 # These packages contain runtime Python modules and/or data that static
-# analysis cannot reliably discover (Demucs model definitions, CustomTkinter
-# assets, and TkDND's Tcl scripts and native extension).
-for package in ("demucs", "customtkinter"):
+# analysis cannot reliably discover (Demucs model definitions, Mutagen format
+# handlers, CustomTkinter assets, and TkDND's Tcl scripts/native extension).
+for package in ("demucs", "customtkinter", "mutagen"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas.extend(package_datas)
     binaries.extend(package_binaries)
@@ -95,7 +96,7 @@ datas.extend(
 binaries.extend(sounddevice_binaries)
 hiddenimports.extend(sounddevice_hiddenimports)
 
-for package in ("demucs", "torch", "customtkinter", "tkinterdnd2", "soundfile", "sounddevice"):
+for package in ("demucs", "torch", "customtkinter", "tkinterdnd2", "soundfile", "sounddevice", "mutagen"):
     datas.extend(copy_metadata(package))
 
 datas = _unique(datas)
