@@ -6,5 +6,6 @@ soundfile==0.13.1
 sounddevice==0.5.6
 customtkinter==6.0.0
 tkinterdnd2==0.6.2
+mutagen==1.48.1
 pyinstaller==6.22.2
 pyinstaller-hooks-contrib==2026.7

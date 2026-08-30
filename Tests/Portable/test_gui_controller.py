@@ -129,6 +129,20 @@ class GuiControllerTests(unittest.TestCase):
         self.assertEqual(1, len(queue.workers))
         self.assertEqual("song.mp3", controller.state.input_file)
 
+    def test_explicit_managed_directory_and_stable_job_id_override_temp_cache(self):
+        calls = []
+        controller, queue, _states = self.configured(
+            lambda source, directory, **_options: calls.append((source, directory)) or directory,
+            cache_directory=lambda path, **_options: Path("temporary") / "cache",
+        )
+
+        self.assertTrue(controller.start(result_directory=Path("durable") / "track-id", job_id="track-id"))
+        queue.workers.pop()()
+        queue.events.pop()()
+
+        self.assertEqual([("song.mp3", Path("durable") / "track-id")], calls)
+        self.assertEqual("track-id", controller.state.job_id)
+
     def test_surfaces_actionable_backend_error_on_ui_dispatch(self):
         def fail(_input, _directory, **_options):
             raise DemucsSeparationError(

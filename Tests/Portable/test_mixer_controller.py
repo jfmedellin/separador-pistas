@@ -194,6 +194,20 @@ class MixerControllerTests(unittest.TestCase):
         self.assertIn("device disconnected", self.controller.state.detail)
         self.assertIn("Reconnect it", self.controller.state.detail)
 
+    def test_unload_releases_the_session_without_closing_the_controller(self):
+        self.assertTrue(self.controller.load("first"))
+        self.finish_next_load()
+        engine = self.engines[-1]
+
+        self.assertTrue(self.controller.unload())
+
+        self.assertTrue(engine.closed)
+        self.assertEqual("idle", self.controller.state.phase)
+        self.assertIsNone(self.controller.state.session)
+        self.assertTrue(self.controller.load("second"))
+        self.finish_next_load()
+        self.assertEqual("ready", self.controller.state.phase)
+
 
 class TransportTests(MixerControllerTests):
     """The bottom transport bar drives these; none of them may be decorative."""

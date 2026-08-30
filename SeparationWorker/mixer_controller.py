@@ -576,6 +576,19 @@ class MixerController:
         except Exception:
             return
 
+    def unload(self) -> bool:
+        """Release the active session while keeping this controller reusable."""
+        with self._lock:
+            if self._closed:
+                return False
+            self._generation += 1
+            engine = self._engine
+            had_session = engine is not None or self.state.session is not None
+            self._engine = None
+        self._close_engine(engine)
+        self._set_state(MixerState())
+        return had_session
+
     def close(self) -> bool:
         with self._lock:
             if self._closed:

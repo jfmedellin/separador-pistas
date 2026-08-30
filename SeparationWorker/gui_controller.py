@@ -48,6 +48,7 @@ class GuiState:
     profile_id: str = LEGACY_PROFILE.profile_id
     profile_available: bool = True
     profile_remediation: str = ""
+    job_id: str | None = None
 
     @property
     def can_start(self) -> bool:
@@ -166,7 +167,8 @@ class SeparationController:
         )
         return True
 
-    def start(self) -> bool:
+    def start(self, *, result_directory: str | Path | None = None, job_id: str | None = None) -> bool:
+        """Start one stable job, optionally publishing to an explicit managed directory."""
         if self.state.phase == "running":
             return False
         if not self._profile.enabled:
@@ -191,7 +193,15 @@ class SeparationController:
             return False
 
         input_file = self.state.input_file
-        result_directory = self.state.result_directory
+        if result_directory is not None:
+            try:
+                result_directory = Path(result_directory)
+            except (TypeError, ValueError):
+                return False
+        else:
+            result_directory = self.state.result_directory
+        if result_directory is None:
+            return False
         profile = self._profile
         self._set_state(
             replace(
@@ -199,6 +209,8 @@ class SeparationController:
                 phase="running",
                 headline=f"Separating into {len(profile.lanes)} stems",
                 detail="This can take several minutes. Keep this window open.",
+                result_directory=result_directory,
+                job_id=job_id,
             )
         )
         self._start_worker(lambda: self._run(input_file, result_directory, profile))
