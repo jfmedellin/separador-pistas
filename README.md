@@ -67,7 +67,7 @@ Metal Stereo isolates the guitar with `htdemucs_6s`, then splits that one stem i
 
 This is why the lanes are named for the position they describe and never for a role. Metal Stereo is not, and must not be presented as, lead and rhythm separation.
 
-The split itself is exact: centre plus sides reconstructs the isolated guitar, and there are no weights to admit and no licence to satisfy, which is why it can ship enabled while the Metal profile below cannot.
+The split itself is arithmetic, not inference: centre plus sides reconstructs the isolated guitar. It is exact in float32, and the published lanes reconstruct to about 90 dB because a result inherits the 16-bit sample format Demucs wrote, which is a quantisation floor rather than a loss in the split. There are no weights to admit and no licence to satisfy, which is why this profile can ship enabled while the Metal profile below cannot.
 
 ### Metal
 
