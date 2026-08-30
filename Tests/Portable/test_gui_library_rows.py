@@ -198,7 +198,7 @@ class ReadyRowOpenTests(LibraryRowFixture):
         self.pump_until(lambda: self.app.mixer_controller.state.phase != "loading")
 
         self.assertEqual("mixer", self.app._view)
-        self.assertEqual(record.result_directory, self.app.mixer_controller.state.folder)
+        self.assertEqual(record.result_directory.resolve(), Path(self.app.mixer_controller.state.folder).resolve())
         self.assertEqual("ready", self.app.mixer_controller.state.phase)
 
     def test_clicking_open_on_a_missing_result_marks_the_row_unavailable_without_switching_view(self):
@@ -237,7 +237,7 @@ class ReadyRowRemoveTests(LibraryRowFixture):
         body = self.render_and_find_row()
         self.find_action_button(body, "open").invoke()
         self.pump_until(lambda: self.app.mixer_controller.state.phase != "loading")
-        self.assertEqual(record.result_directory, self.app.mixer_controller.state.folder)
+        self.assertEqual(record.result_directory.resolve(), Path(self.app.mixer_controller.state.folder).resolve())
 
         body = self.render_and_find_row()
         remove_button = self.find_action_button(body, "remove")
