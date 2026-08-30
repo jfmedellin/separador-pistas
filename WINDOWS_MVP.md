@@ -4,9 +4,9 @@ Stemslayer separates one audio file into `vocals.wav`, `drums.wav`, `bass.wav`, 
 
 ## Recommended distribution: portable ZIP
 
-Download the Windows x64 portable ZIP from [GitHub Releases](https://github.com/jfmedellin/separador-pistas/releases), not **Code → Download ZIP**. Extract it and run `Stemslayer.exe`. The extracted bundle includes the GUI and `StemslayerWorker.exe`, so users do not need Python, Git, NVIDIA drivers, or a separate Demucs installation.
+Download a Windows x64 portable ZIP from [GitHub Releases](https://github.com/jfmedellin/separador-pistas/releases), not **Code → Download ZIP**. Choose the CUDA ZIP for a supported NVIDIA GPU and current NVIDIA driver; choose the CPU ZIP as the universal fallback. Extract it and run `Stemslayer.exe`. Both bundles include the GUI and `StemslayerWorker.exe`, so users do not need Python, Git, or a separate Demucs installation.
 
-The first separation downloads the `htdemucs` model weights. Later runs reuse the model cache and complete results when available. This first build is CPU-safe; CPU separation can take several minutes.
+The first separation downloads the `htdemucs` model weights. Later runs reuse the model cache and complete results when available. CUDA inference is substantially faster on supported NVIDIA hardware, but its ZIP is roughly 2 GB because it bundles the NVIDIA runtime; CPU separation can take several minutes. The CPU worker enables two chunk workers on machines with at least eight logical processors, coordinates their PyTorch thread limits, and uses 10% overlap. Smaller machines remain serial to avoid increasing memory pressure. This balanced overlap can slightly reduce quality at chunk boundaries compared with Demucs' 25% default.
 
 ## Run from source
 
@@ -39,7 +39,7 @@ The source CLI still accepts an explicit destination directory:
 
 ## Runtime behavior
 
-In source development, the adapter runs `python -m demucs.separate`, selects CUDA when PyTorch reports an available GPU, and retries the complete separation once on CPU if the CUDA run fails. In the portable bundle, the adapter launches the sibling `StemslayerWorker.exe`; that worker contains the CPU-only PyTorch and runs `demucs.separate` without a Python installation. Publication is atomic, so an incomplete result directory is never exposed.
+In source development, the adapter runs `python -m demucs.separate`, selects CUDA when PyTorch reports an available GPU, and retries the complete separation once on CPU if the CUDA run fails. In either portable bundle, the adapter launches the sibling `StemslayerWorker.exe` without requiring a Python installation. The CUDA worker selects NVIDIA acceleration when available and retains the CPU retry; the CPU worker always uses CPU inference. Publication is atomic, so an incomplete result directory is never exposed.
 
 The mixer does not currently include panning, mixed-WAV export, looping, waveform zoom, output-device selection, or persisted settings.
 

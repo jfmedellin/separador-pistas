@@ -248,7 +248,7 @@ class WorkerIsolationTests(unittest.TestCase):
             inherited = {"HTTP_PROXY": "http://proxy.invalid", "PATH": os.environ.get("PATH", "")}
             environment, owned = prepare_job_environment(workspace, inherited)
             for key in ("HOME", "XDG_CACHE_HOME", "TORCH_HOME", "TMP", "TEMP", "PYTHONPYCACHEPREFIX"):
-                self.assertTrue(Path(environment[key]).is_relative_to(workspace))
+                self.assertTrue(Path(environment[key]).resolve().is_relative_to(workspace.resolve()))
             self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
             self.assertNotIn("HTTP_PROXY", environment)
             self.assertTrue(all(path.exists() for path in owned))
