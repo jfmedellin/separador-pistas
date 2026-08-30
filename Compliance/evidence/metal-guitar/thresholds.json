@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "calibrated": false,
+  "calibration_blocker": "No rights-cleared dense metal corpus exists yet. Every value below is a target, not a measured limit, and admission fails while calibrated is false.",
+  "audio_contract": {
+    "sample_rate_hz": 44100,
+    "channels": 2,
+    "frame_alignment": "exact"
+  },
+  "gates": {
+    "reconstruction": {
+      "metric": "signal_to_residual_db",
+      "description": "lead + rhythm against the isolated guitar family",
+      "minimum_db": 30.0
+    },
+    "leakage": {
+      "metric": "cross_role_energy_ratio_db",
+      "description": "energy of one role lane present in the other",
+      "maximum_db": -12.0
+    },
+    "audibility": {
+      "metric": "peak_dbfs",
+      "description": "a lane that is not declared absent must carry meaningful signal, never a noise-floor placeholder",
+      "minimum_dbfs": -40.0
+    },
+    "role_absence": {
+      "metric": "peak_dbfs",
+      "description": "a lane at or below this level is treated as absent and must still satisfy reconstruction; the band between this level and the audibility minimum is a placeholder and fails",
+      "absent_at_or_below_dbfs": -80.0
+    },
+    "perceptual": {
+      "metric": "blinded_listening",
+      "description": "recorded blinded comparison on dense metal material",
+      "minimum_raters": 5,
+      "minimum_preference_ratio": 0.7,
+      "evidence_required": true
+    }
+  }
+}

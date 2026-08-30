@@ -8,17 +8,34 @@ properties that make automatic temp-cache cleanup safe:
 * A manually loaded folder is never tracked and therefore survives close.
 """
 
+import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+import soundfile as sf
+
+from SeparationWorker.demucs_adapter import separate_audio
 from SeparationWorker.engine import stem_cache
 from SeparationWorker.engine.pcm import PlanarPCM
-from SeparationWorker.engine.stem_session import STEM_NAMES
+from SeparationWorker.engine.role_metrics import RoleThresholds
+from SeparationWorker.engine.stem_profile import MANIFEST_NAME, METAL_PROFILE
+from SeparationWorker.engine.stem_session import STEM_NAMES, StemSession
 from SeparationWorker.engine.wav import encode_float32_wav
 from SeparationWorker.gui_controller import SeparationController
 from SeparationWorker.mixer_controller import MixerController
+
+METAL_SAMPLE_RATE = 44_100
+THRESHOLDS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "Compliance"
+    / "evidence"
+    / "metal-guitar"
+    / "thresholds.json"
+)
 
 
 def _write_stem_wavs(folder: Path) -> None:
@@ -74,7 +91,7 @@ class AutoOpenedResultDiscardTests(unittest.TestCase):
             input_file = Path(workspace) / "song.mp3"
             input_file.write_bytes(b"audio")
 
-            def separate(_input_file, result_directory):
+            def separate(_input_file, result_directory, **_options):
                 _write_stem_wavs(Path(result_directory))
                 return Path(result_directory)
 
@@ -111,7 +128,7 @@ class ManualLoadPreservationTests(unittest.TestCase):
             export_destination = Path(workspace) / "export"
             export_destination.mkdir()
 
-            def separate(_input_file, result_directory):
+            def separate(_input_file, result_directory, **_options):
                 raise AssertionError("separation must not run for a manual-only session")
 
             app = HeadlessApp(separate=separate)
@@ -128,6 +145,138 @@ class ManualLoadPreservationTests(unittest.TestCase):
 
             self.assertTrue(manual_folder.is_dir())
             self.assertEqual(set(STEM_NAMES), {path.name for path in manual_folder.iterdir()})
+
+
+def _metal_tone(frequency, amplitude=0.4, seconds=0.25):
+    frames = int(METAL_SAMPLE_RATE * seconds)
+    time = np.arange(frames, dtype=np.float32) / METAL_SAMPLE_RATE
+    wave = (amplitude * np.sin(2.0 * np.pi * frequency * time)).astype(np.float32)
+    return np.stack([wave, wave], axis=1)
+
+
+def _calibrated_thresholds():
+    payload = json.loads(THRESHOLDS_PATH.read_text(encoding="utf-8"))
+    payload["calibrated"] = True
+    return RoleThresholds.from_payload(payload)
+
+
+class SixLaneLifecycleTests(unittest.TestCase):
+    """Prove a Metal result travels from separation through to a six-lane mixer."""
+
+    def setUp(self):
+        self.profile = replace(METAL_PROFILE, specialist_id="metal-lead-rhythm-v1", enabled=True)
+        self.lead = _metal_tone(880.0)
+        self.rhythm = _metal_tone(110.0, amplitude=0.5)
+        self.sources = {
+            "vocals": _metal_tone(440.0),
+            "drums": _metal_tone(150.0),
+            "bass": _metal_tone(80.0),
+            "guitar": self.lead + self.rhythm,
+            "piano": _metal_tone(330.0, amplitude=0.2),
+            "other": _metal_tone(220.0, amplitude=0.1),
+        }
+
+    def runner(self, command):
+        command = list(command)
+        model = command[command.index("--name") + 1]
+        output = Path(command[command.index("--out") + 1])
+        source = output / model / Path(command[-1]).stem
+        source.mkdir(parents=True)
+        for name, samples in self.sources.items():
+            sf.write(str(source / f"{name}.wav"), samples, METAL_SAMPLE_RATE, subtype="FLOAT")
+
+    def specialist(self, lead, rhythm):
+        def run(_guitar_path, staging):
+            sf.write(str(staging / "lead_guitar.wav"), lead, METAL_SAMPLE_RATE, subtype="FLOAT")
+            sf.write(str(staging / "rhythm_guitar.wav"), rhythm, METAL_SAMPLE_RATE, subtype="FLOAT")
+
+        return run
+
+    def separate(self, root, *, lead=None, rhythm=None):
+        audio_file = Path(root) / "song.mp3"
+        audio_file.write_bytes(b"audio")
+        return separate_audio(
+            audio_file,
+            Path(root) / "cache" / "metal-result",
+            profile=self.profile,
+            runner=self.runner,
+            cuda_probe=lambda: False,
+            specialist=self.specialist(
+                self.lead if lead is None else lead, self.rhythm if rhythm is None else rhythm
+            ),
+            thresholds=_calibrated_thresholds(),
+        )
+
+    def mixer_for(self, folder):
+        controller = MixerController(
+            session_loader=lambda path: StemSession.load(path, profile=self.profile),
+            start_worker=lambda target: target(),
+            dispatch=lambda callback: callback(),
+        )
+        controller.load(folder, title="song")
+        return controller
+
+    def test_a_metal_result_loads_as_six_synchronized_lanes(self):
+        with tempfile.TemporaryDirectory() as root:
+            result = self.separate(root)
+
+            session = StemSession.load(result, profile=self.profile)
+
+            self.assertEqual(self.profile.file_names, session.names)
+            self.assertEqual(6, len(session.paths))
+            self.assertEqual(METAL_SAMPLE_RATE, session.sample_rate)
+            self.assertEqual(2, session.channels)
+            self.assertEqual((), session.absent)
+            self.assertTrue((result / MANIFEST_NAME).is_file())
+
+    def test_the_mixer_exposes_every_lane_of_a_metal_result(self):
+        with tempfile.TemporaryDirectory() as root:
+            result = self.separate(root)
+
+            controller = self.mixer_for(result)
+            try:
+                state = controller.state
+
+                self.assertEqual("ready", state.phase)
+                self.assertEqual(self.profile.file_names, state.lane_names)
+                self.assertTrue(controller.set_muted("lead_guitar.wav", True))
+                self.assertTrue(controller.set_solo("rhythm_guitar.wav", True))
+            finally:
+                controller.close()
+
+    def test_a_track_without_lead_reaches_the_mixer_as_a_labeled_silent_lane(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.sources["guitar"] = self.rhythm
+            silence = np.zeros_like(self.rhythm)
+
+            result = self.separate(root, lead=silence)
+            controller = self.mixer_for(result)
+            try:
+                state = controller.state
+
+                self.assertEqual(("lead_guitar",), state.absent_lanes)
+                self.assertTrue(state.is_absent("lead_guitar.wav"))
+                self.assertIn("lead_guitar.wav", state.lane_names)
+                self.assertTrue((result / "lead_guitar.wav").is_file())
+                self.assertTrue(controller.set_muted("lead_guitar.wav", True))
+            finally:
+                controller.close()
+
+    def test_a_legacy_folder_still_loads_as_four_lanes(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root) / "legacy"
+            _write_stem_wavs(folder)
+
+            controller = MixerController(
+                start_worker=lambda target: target(), dispatch=lambda callback: callback()
+            )
+            controller.load(folder, title="legacy")
+            try:
+                self.assertEqual("ready", controller.state.phase)
+                self.assertEqual(STEM_NAMES, controller.state.lane_names)
+                self.assertEqual((), controller.state.absent_lanes)
+            finally:
+                controller.close()
 
 
 if __name__ == "__main__":

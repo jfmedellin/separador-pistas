@@ -1,4 +1,10 @@
-"""Validated, streamable metadata for the four Windows mixer stems."""
+"""Validated, streamable metadata for one published Windows mixer result.
+
+A result carries its own layout. When a manifest is present the session
+publishes exactly the lanes it declares, in its order, and remembers which
+of them are declared absent. A manifest-less folder is the legacy four-stem
+layout, which is still loaded exactly as it always was.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,14 @@ import numpy as np
 import soundfile as sf
 
 from .pcm import AudioContractError
+from .stem_profile import (
+    LEGACY_PROFILE,
+    MANIFEST_NAME,
+    StemProfileError,
+    parse_manifest,
+    resolve_profile,
+    verify_manifest,
+)
 
 
 STEM_ORDER = ("vocals", "drums", "bass", "other")
@@ -66,14 +80,52 @@ class StemSession:
     channels: int
     frame_count: int
     peaks: tuple[tuple[float, ...], ...]
+    names: tuple[str, ...] = ()
+    absent: tuple[str, ...] = ()
+    profile_id: str = LEGACY_PROFILE.profile_id
 
     def __post_init__(self):
         object.__setattr__(self, "folder", Path(self.folder).resolve())
         object.__setattr__(self, "paths", tuple(Path(path) for path in self.paths))
         object.__setattr__(self, "peaks", tuple(tuple(float(value) for value in envelope) for envelope in self.peaks))
+        if not self.names:
+            object.__setattr__(self, "names", tuple(path.name for path in self.paths))
+        object.__setattr__(self, "absent", tuple(self.absent))
+
+    @staticmethod
+    def _layout(folder: Path, profile) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+        """Return the published lane names, absent lanes, and profile identity."""
+        manifest_file = folder / MANIFEST_NAME
+        try:
+            has_manifest = manifest_file.is_file()
+            payload = manifest_file.read_bytes() if has_manifest else b""
+        except OSError as exc:
+            raise _error(
+                "stem.manifest_unreadable",
+                f"The result manifest could not be read: {exc}.",
+                "Discard the result folder and separate the song again.",
+            ) from exc
+        if not has_manifest:
+            if profile is not None and not profile.accepts_manifestless_results:
+                raise _error(
+                    "stem.manifest_missing",
+                    f"The {profile.display_name} profile requires a result manifest.",
+                    "Separate the song again; only legacy results may load without a manifest.",
+                )
+            return STEM_NAMES, (), LEGACY_PROFILE.profile_id
+        try:
+            manifest = parse_manifest(payload)
+            verify_manifest(manifest, profile or resolve_profile(manifest.profile_id))
+        except StemProfileError as exc:
+            raise _error(
+                "stem.manifest_invalid",
+                f"The result manifest is not usable ({exc.code}): {exc.cause}",
+                exc.recovery,
+            ) from exc
+        return manifest.file_names, manifest.absent_lane_ids, manifest.profile_id
 
     @classmethod
-    def load(cls, folder: str | Path, *, bin_count: int = PEAK_BIN_COUNT) -> "StemSession":
+    def load(cls, folder: str | Path, *, profile=None, bin_count: int = PEAK_BIN_COUNT) -> "StemSession":
         folder = Path(folder).resolve()
         if not folder.is_dir():
             raise _error(
@@ -88,13 +140,14 @@ class StemSession:
                 f"Use the default {PEAK_BIN_COUNT}-bin waveform envelope.",
             )
 
-        paths = tuple(folder / name for name in STEM_NAMES)
+        names, absent, profile_id = cls._layout(folder, profile)
+        paths = tuple(folder / name for name in names)
         missing = next((path for path in paths if not path.is_file()), None)
         if missing is not None:
             raise _error(
                 "stem.missing",
                 f"Required stem is missing: {missing.name}.",
-                "Select a complete Demucs result folder containing all four required WAV files.",
+                f"Select a complete result folder containing all {len(names)} required WAV files.",
             )
 
         expected_identity = None
@@ -143,7 +196,17 @@ class StemSession:
 
         assert expected_identity is not None
         sample_rate, channels, frame_count = expected_identity
-        return cls(folder, paths, sample_rate, channels, frame_count, tuple(envelopes))
+        return cls(
+            folder,
+            paths,
+            sample_rate,
+            channels,
+            frame_count,
+            tuple(envelopes),
+            names,
+            absent,
+            profile_id,
+        )
 
     @property
     def duration_seconds(self) -> float:
@@ -151,7 +214,15 @@ class StemSession:
 
     def peaks_for(self, stem_name: str) -> tuple[float, ...]:
         try:
-            index = STEM_NAMES.index(stem_name)
+            index = self.names.index(stem_name)
         except ValueError as exc:
             raise KeyError(stem_name) from exc
         return self.peaks[index]
+
+    def is_absent(self, stem_name: str) -> bool:
+        """Report whether a published lane was declared absent for this track.
+
+        An absent lane is real, aligned silence: it plays and exports like any
+        other lane, and the caller labels it rather than hiding it.
+        """
+        return Path(stem_name).stem in self.absent

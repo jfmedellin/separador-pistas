@@ -458,5 +458,121 @@ class ExportStemsBatchTests(unittest.TestCase):
         self.assertEqual(b"content:vocals.wav", (self.destination / "mysong-vocals.wav").read_bytes())
 
 
+METAL_LANES = (
+    "vocals.wav",
+    "drums.wav",
+    "bass.wav",
+    "lead_guitar.wav",
+    "rhythm_guitar.wav",
+    "other.wav",
+)
+
+
+@dataclass(frozen=True)
+class FakeProfileSession:
+    """A published result that carries its own lane layout."""
+
+    folder: Path
+    names: tuple = METAL_LANES
+    absent: tuple = ("lead_guitar",)
+    frame_count: int = 100
+    sample_rate: int = 10
+    channels: int = 2
+
+    @property
+    def paths(self):
+        return tuple(self.folder / name for name in self.names)
+
+
+class ProfileLaneMixerTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.folder = Path(self.temporary.name)
+        for name in METAL_LANES:
+            (self.folder / name).write_bytes(b"RIFF-fake-" + name.encode("ascii"))
+        self.controller = MixerController(
+            session_loader=lambda folder: FakeProfileSession(Path(folder)),
+            playback_factory=FakePlayback,
+            start_worker=lambda target: target(),
+            dispatch=lambda callback: callback(),
+        )
+        self.controller.load(self.folder, title="song")
+
+    def tearDown(self):
+        self.controller.close()
+        self.temporary.cleanup()
+
+    def test_session_exposes_every_published_lane_in_order(self):
+        state = self.controller.state
+
+        self.assertEqual("ready", state.phase)
+        self.assertEqual("6 stems are ready", state.headline)
+        self.assertEqual(METAL_LANES, state.lane_names)
+        self.assertEqual(
+            METAL_LANES, tuple(setting.name for setting in state.settings.settings)
+        )
+
+    def test_absent_lane_is_reported_rather_than_hidden(self):
+        state = self.controller.state
+
+        self.assertEqual(("lead_guitar",), state.absent_lanes)
+        self.assertTrue(state.is_absent("lead_guitar.wav"))
+        self.assertFalse(state.is_absent("rhythm_guitar.wav"))
+        self.assertIn("lead_guitar.wav", state.lane_names)
+
+    def test_role_lanes_accept_mute_solo_and_gain(self):
+        self.assertTrue(self.controller.set_muted("lead_guitar.wav", True))
+        self.assertTrue(self.controller.set_solo("rhythm_guitar", True))
+        self.assertTrue(self.controller.set_volume("rhythm_guitar.wav", 50))
+
+        settings = {item.name: item for item in self.controller.state.settings.settings}
+        self.assertTrue(settings["lead_guitar.wav"].muted)
+        self.assertTrue(settings["rhythm_guitar.wav"].solo)
+        self.assertLess(settings["rhythm_guitar.wav"].gain, 1.0)
+
+    def test_an_absent_lane_is_still_controllable(self):
+        self.assertTrue(self.controller.toggle_mute("lead_guitar.wav"))
+
+        settings = {item.name: item for item in self.controller.state.settings.settings}
+        self.assertTrue(settings["lead_guitar.wav"].muted)
+
+    def test_a_lane_outside_the_published_layout_is_refused(self):
+        self.assertFalse(self.controller.set_muted("guitar.wav", True))
+        self.assertFalse(self.controller.set_volume("piano.wav", 50))
+
+    def test_role_lanes_export_as_published_bytes(self):
+        with tempfile.TemporaryDirectory() as destination:
+            written = self.controller.export_stem("lead_guitar.wav", destination)
+
+            self.assertIsNotNone(written)
+            self.assertEqual("song-lead_guitar.wav", written.name)
+            self.assertEqual((self.folder / "lead_guitar.wav").read_bytes(), written.read_bytes())
+
+    def test_batch_export_covers_every_published_lane(self):
+        with tempfile.TemporaryDirectory() as destination:
+            self.assertTrue(self.controller.export_stems(METAL_LANES, destination))
+
+            results = self.controller.state.export_results
+            self.assertEqual("done", self.controller.state.export_phase)
+            self.assertEqual(len(METAL_LANES), len(results))
+            self.assertTrue(all(code is None and path is not None for _name, path, code in results))
+
+    def test_a_failed_load_falls_back_to_the_legacy_layout(self):
+        def failing_loader(_folder):
+            raise ValueError("broken folder")
+
+        controller = MixerController(
+            session_loader=failing_loader,
+            playback_factory=FakePlayback,
+            start_worker=lambda target: target(),
+            dispatch=lambda callback: callback(),
+        )
+        controller.load(self.folder, title="song")
+
+        self.assertEqual("error", controller.state.phase)
+        self.assertEqual(STEMS, controller.state.lane_names)
+        self.assertEqual((), controller.state.absent_lanes)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -66,6 +66,73 @@ class MixerViewModelTests(unittest.TestCase):
         self.assertEqual(0.76, preview.preview_ratio)
 
 
+METAL_LANES = (
+    "vocals.wav",
+    "drums.wav",
+    "bass.wav",
+    "lead_guitar.wav",
+    "rhythm_guitar.wav",
+    "other.wav",
+)
+
+
+class ProfileLaneViewModelTests(unittest.TestCase):
+    def view(self, *, absent=(), lane_names=METAL_LANES):
+        state = MixerState(
+            folder=Path("stems"),
+            session=FakeSession(),
+            phase="ready",
+            frame_count=100,
+            settings=MixerSnapshot(tuple(MixSetting(name) for name in lane_names)),
+            lane_names=lane_names,
+            absent_lanes=absent,
+        )
+        return MixerViewModel.from_controller_state(state)
+
+    def test_every_published_lane_is_rendered_in_profile_order(self):
+        view = self.view()
+
+        self.assertEqual(METAL_LANES, view.lane_names)
+        self.assertEqual(METAL_LANES, tuple(row[0] for row in view.lane_rows))
+        self.assertEqual("LEAD GUITAR", view.lane_rows[3][1])
+        self.assertEqual("RHYTHM GUITAR", view.lane_rows[4][1])
+
+    def test_an_absent_lane_keeps_its_row_and_is_labeled(self):
+        view = self.view(absent=("lead_guitar",))
+
+        self.assertTrue(view.is_absent("lead_guitar.wav"))
+        self.assertFalse(view.is_absent("rhythm_guitar.wav"))
+        name, label, _color, absent = view.lane_rows[3]
+        self.assertEqual("lead_guitar.wav", name)
+        self.assertTrue(absent)
+        self.assertIn("NOT IN THIS TRACK", label)
+        self.assertEqual(6, len(view.lane_rows))
+
+    def test_role_lanes_have_their_own_colours(self):
+        view = self.view()
+        colors = {row[0]: row[2] for row in view.lane_rows}
+
+        self.assertNotEqual(colors["lead_guitar.wav"], colors["rhythm_guitar.wav"])
+        self.assertNotEqual(colors["lead_guitar.wav"], colors["other.wav"])
+
+    def test_an_unknown_lane_still_renders_readably(self):
+        view = self.view(lane_names=("vocals.wav", "hammond_organ.wav"))
+
+        name, label, color, absent = view.lane_rows[1]
+        self.assertEqual("hammond_organ.wav", name)
+        self.assertEqual("HAMMOND ORGAN", label)
+        self.assertTrue(color.startswith("#"))
+        self.assertFalse(absent)
+
+    def test_the_legacy_layout_is_unchanged(self):
+        view = self.view(lane_names=("vocals.wav", "drums.wav", "bass.wav", "other.wav"))
+
+        self.assertEqual(
+            ("VOCALS", "DRUMS", "BASS", "OTHER"), tuple(row[1] for row in view.lane_rows)
+        )
+        self.assertEqual((), view.absent_names)
+
+
 class GuiEntrypointTests(unittest.TestCase):
     def test_self_test_does_not_create_a_window(self):
         self.assertEqual(0, main(["--self-test"]))
