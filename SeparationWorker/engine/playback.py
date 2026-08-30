@@ -28,6 +28,8 @@ class PlaybackState:
     position: int
     playing: bool
     frame_count: int
+    looping: bool = False
+    master_gain: float = 1.0
 
     @property
     def duration_frames(self) -> int:
@@ -86,6 +88,8 @@ class PlaybackEngine:
         self._error_reported = False
         self._readers = None
         self._stream = None
+        self._looping = False
+        self._master_gain = 1.0
         self._snapshot = MixerSnapshot(tuple())
         self._thread = threading.Thread(target=self._run, name="stemslayer-playback", daemon=True)
         self._thread.start()
@@ -133,6 +137,13 @@ class PlaybackEngine:
             raise ValueError("Playback seek requires a numeric frame")
         self._enqueue("seek", int(frame))
 
+    def set_looping(self, looping: bool):
+        self._enqueue("loop", bool(looping))
+
+    def set_master_gain(self, gain: float):
+        """Set the gain applied to the finished mix, from silence to unity."""
+        self._enqueue("master", max(0.0, min(1.0, float(gain))))
+
     def apply(self, snapshot: MixerSnapshot):
         if not isinstance(snapshot, MixerSnapshot):
             raise TypeError("Playback settings require a MixerSnapshot")
@@ -162,7 +173,9 @@ class PlaybackEngine:
 
     def _state(self) -> PlaybackState:
         with self._lock:
-            return PlaybackState(self._position, self._playing, self._session.frame_count)
+            return PlaybackState(
+                self._position, self._playing, self._session.frame_count, self._looping, self._master_gain
+            )
 
     def _emit_state(self):
         if self._on_state is None:
@@ -231,6 +244,10 @@ class PlaybackEngine:
                 with self._lock:
                     self._position = target
                 self._emit_state()
+        elif command == "loop":
+            self._looping = value
+        elif command == "master":
+            self._master_gain = value
         elif command == "apply":
             self._snapshot = value
         elif command == "replace":
@@ -302,13 +319,35 @@ class PlaybackEngine:
         for reader in self._readers:
             reader.seek(target)
 
+    def _reached_the_end(self):
+        """Restart when looping, otherwise stop and release the output.
+
+        Looping rewinds the readers already open rather than stopping and
+        reopening the device, so the seam between passes stays inaudible.
+        """
+        if self._looping:
+            try:
+                self._seek_readers(0)
+            except Exception as exc:
+                self._fail(_error(
+                    "playback.seek",
+                    f"Could not rewind the stem readers to loop: {exc}.",
+                    "Turn looping off, or load the complete stem folder again.",
+                ))
+                return
+            with self._lock:
+                self._position = 0
+            self._emit_state()
+            return
+        self._stop_resources()
+        with self._lock:
+            self._playing = False
+        self._emit_state()
+
     def _write_block(self):
         remaining = self._session.frame_count - self._position
         if remaining <= 0:
-            self._stop_resources()
-            with self._lock:
-                self._playing = False
-            self._emit_state()
+            self._reached_the_end()
             return
         requested = min(self._block_size, remaining)
         gains = effective_gains(self._snapshot)
@@ -333,6 +372,8 @@ class PlaybackEngine:
                     )
                 gain = np.float32(gains.get(stem_name, 1.0))
                 mixed += block * gain
+            if self._master_gain != 1.0:
+                mixed *= np.float32(self._master_gain)
             np.clip(mixed, -1.0, 1.0, out=mixed)
             self._stream.write(mixed)
         except PlaybackError as error:
@@ -349,10 +390,7 @@ class PlaybackEngine:
             self._position += requested
         self._emit_state()
         if self._position >= self._session.frame_count:
-            self._stop_resources()
-            with self._lock:
-                self._playing = False
-            self._emit_state()
+            self._reached_the_end()
 
     def _fail(self, error: PlaybackError):
         if self._error_reported:

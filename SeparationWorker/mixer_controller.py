@@ -44,6 +44,8 @@ class MixerState:
     export_results: tuple[tuple[str, Path | None, str | None], ...] = ()
     lane_names: tuple[str, ...] = STEM_NAMES
     absent_lanes: tuple[str, ...] = ()
+    looping: bool = False
+    master_percent: int = 100
 
     def is_absent(self, stem_name: str) -> bool:
         """Report whether a lane was declared absent for this track.
@@ -302,6 +304,7 @@ class MixerController:
                 position=int(state.position),
                 frame_count=int(state.frame_count),
                 playing=bool(state.playing),
+                looping=bool(getattr(state, "looping", self.state.looping)),
                 error_code=None,
             )
         )
@@ -360,6 +363,55 @@ class MixerController:
             engine.seek(frame)
         except Exception:
             return False
+        return True
+
+    def nudge(self, seconds: float) -> bool:
+        """Seek relative to the current position, in seconds.
+
+        The clamp and the sample-rate conversion live here so every caller
+        that skips backward or forward agrees on where the track ends.
+        """
+        try:
+            offset = float(seconds)
+        except (TypeError, ValueError):
+            return False
+        sample_rate = getattr(self.state.session, "sample_rate", 0)
+        if not sample_rate or not self.state.frame_count:
+            return False
+        target = int(self.state.position + offset * sample_rate)
+        return self.seek(max(0, min(target, self.state.frame_count)))
+
+    def set_looping(self, looping: bool) -> bool:
+        if not isinstance(looping, bool):
+            return False
+        engine = self._valid_command_engine()
+        if engine is None:
+            return False
+        try:
+            engine.set_looping(looping)
+        except Exception:
+            return False
+        self._set_state(replace(self.state, looping=looping))
+        return True
+
+    def toggle_looping(self) -> bool:
+        return self.set_looping(not self.state.looping)
+
+    def set_master_percent(self, percent: int | float) -> bool:
+        """Set the gain applied to the finished mix, as a 0-100 percentage."""
+        try:
+            value = int(round(float(percent)))
+        except (TypeError, ValueError):
+            return False
+        value = max(0, min(100, value))
+        engine = self._valid_command_engine()
+        if engine is None:
+            return False
+        try:
+            engine.set_master_gain(gain_from_percent(value))
+        except Exception:
+            return False
+        self._set_state(replace(self.state, master_percent=value))
         return True
 
     def _copy_stem(self, stem_name: str, destination: Path) -> tuple[Path | None, str | None]:
