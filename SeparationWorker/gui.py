@@ -44,6 +44,18 @@ COLORS = {
     "success": "#87A987",
 }
 
+# CTkFrame has no alpha channel, so a "tinted" circular button (a colour wash
+# over the window background, as in a web mockup) has to be a precomputed
+# solid hex: channel = window*(1-alpha) + tint*alpha, alpha 0.16 at rest and
+# 0.08 for the disabled Remove wash, against COLORS["window"].
+LIBRARY_ACTION_TINTS = {
+    "accent_rest": "#2A2720",
+    "accent_hover": "#3D372D",
+    "error_rest": "#2A1D1C",
+    "error_hover": "#3D2725",
+    "error_disabled": "#1C1414",
+}
+
 
 # Presentation for every lane a registered profile can publish. Unknown lanes
 # fall back to a readable label and the neutral colour rather than failing to
@@ -189,6 +201,13 @@ def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
         canvas.create_oval(size / 2 - 1.5, size * 0.68, size / 2 + 1.5, size * 0.68 + 3, fill=color, outline="", tags="icon")
     elif kind == "dot":
         canvas.create_oval(size * 0.35, size * 0.35, size * 0.65, size * 0.65, fill=color, outline="", tags="icon")
+    elif kind == "trash":
+        lid_y = size * 0.3
+        canvas.create_line(size * 0.2, lid_y, size * 0.8, lid_y, fill=color, width=2, tags="icon")
+        canvas.create_rectangle(size * 0.4, size * 0.12, size * 0.6, lid_y, outline=color, width=2, tags="icon")
+        canvas.create_rectangle(size * 0.28, lid_y, size * 0.72, size * 0.86, outline=color, width=2, tags="icon")
+        canvas.create_line(size * 0.42, size * 0.42, size * 0.42, size * 0.74, fill=color, width=1.6, tags="icon")
+        canvas.create_line(size * 0.58, size * 0.42, size * 0.58, size * 0.74, fill=color, width=1.6, tags="icon")
     elif kind in {"rewind", "forward"}:
         # One glyph drawn in both directions, so the pair always reads as a
         # matched set instead of two hand-tuned triangles that drift apart.
@@ -253,11 +272,13 @@ class _RoundButton:
         icon: str = "play",
         icon_size: int | None = None,
         active_color: str | None = None,
+        hover_fg: str | None = None,
     ):
         self._fg = fg
         self._fg_disabled = fg_disabled
         self._icon_color = icon_color
         self._active_color = active_color or icon_color
+        self._hover_fg = hover_fg
         self._active = False
         self._icon_kind = icon
         self._command = command
@@ -270,6 +291,9 @@ class _RoundButton:
         )
         self.canvas.pack(expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
+        if hover_fg is not None:
+            self.canvas.bind("<Enter>", self._on_enter)
+            self.canvas.bind("<Leave>", self._on_leave)
         self._redraw()
 
     def _redraw(self) -> None:
@@ -292,12 +316,29 @@ class _RoundButton:
         if self._enabled:
             self._command()
 
+    def _on_enter(self, _event=None) -> None:
+        if self._enabled and self._hover_fg is not None:
+            self.frame.configure(fg_color=self._hover_fg)
+            self.canvas.configure(bg=self._hover_fg)
+
+    def _on_leave(self, _event=None) -> None:
+        if self._enabled:
+            self.frame.configure(fg_color=self._fg)
+            self.canvas.configure(bg=self._fg)
+
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
         color = self._fg if enabled else self._fg_disabled
         self.frame.configure(fg_color=color)
         self.canvas.configure(bg=color, cursor="hand2" if enabled else "arrow")
         self._redraw()
+
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    def invoke(self) -> None:
+        """Fire the click as if the mouse had landed on the canvas -- for tests."""
+        self._on_click()
 
 
 @dataclass(frozen=True)
@@ -696,32 +737,37 @@ class StemslayerApp:
             text_color=COLORS["accent_text"], font=("Segoe UI", 11, "bold"),
         ).pack(side="right")
 
-        controls = ctk.CTkFrame(panel, fg_color=COLORS["surface"], corner_radius=10)
-        controls.pack(fill="x", pady=(0, 12))
+        # A transparent toolbar directly on the window background, not a
+        # bordered "surface" box -- the boxed controls plus boxed panel read
+        # as visually loud with a real catalogue on screen.
+        controls = ctk.CTkFrame(panel, fg_color="transparent")
+        controls.pack(fill="x", pady=(0, 8))
         self.library_search = ctk.CTkEntry(
-            controls, placeholder_text="Search title or artist", width=280,
-            fg_color=COLORS["field"], border_color=COLORS["line"], text_color=COLORS["text"],
+            controls, placeholder_text="Search title or artist", width=260, height=30,
+            fg_color=COLORS["window"], border_width=1, border_color=COLORS["line"], text_color=COLORS["text"],
         )
-        self.library_search.pack(side="left", padx=10, pady=10)
+        self.library_search.pack(side="left")
         self.library_search.bind("<KeyRelease>", lambda _event: self._library_query())
         profiles = ["All profiles"] + [profile.display_name for profile in SeparationController.available_profiles()]
         self.library_profile_filter = ctk.CTkOptionMenu(
-            controls, values=profiles, command=lambda _value: self._library_query(), width=150,
-            fg_color=COLORS["field"], button_color=COLORS["line_strong"], button_hover_color=COLORS["line"],
+            controls, values=profiles, command=lambda _value: self._library_query(), width=140, height=30,
+            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
         )
-        self.library_profile_filter.pack(side="left", padx=(0, 8), pady=10)
+        self.library_profile_filter.pack(side="left", padx=(10, 0))
         self.library_status_filter = ctk.CTkOptionMenu(
             controls,
             values=["All statuses", "Ready", "Processing", "Failed", "Interrupted", "Unavailable"],
-            command=lambda _value: self._library_query(), width=130,
-            fg_color=COLORS["field"], button_color=COLORS["line_strong"], button_hover_color=COLORS["line"],
+            command=lambda _value: self._library_query(), width=120, height=30,
+            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
         )
-        self.library_status_filter.pack(side="left", padx=(0, 8), pady=10)
+        self.library_status_filter.pack(side="left", padx=(8, 0))
         self.library_sort = ctk.CTkOptionMenu(
-            controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(), width=110,
-            fg_color=COLORS["field"], button_color=COLORS["line_strong"], button_hover_color=COLORS["line"],
+            controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(), width=100, height=30,
+            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
         )
-        self.library_sort.pack(side="right", padx=10, pady=10)
+        self.library_sort.pack(side="right")
+
+        ctk.CTkFrame(panel, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", pady=(0, 4))
 
         self.library_rows = ctk.CTkScrollableFrame(
             panel, fg_color=COLORS["window"], corner_radius=0, height=560
@@ -762,14 +808,44 @@ class StemslayerApp:
             ).pack(pady=36)
             return
         profile_names = {profile.profile_id: profile.display_name for profile in SeparationController.available_profiles()}
-        for record in state.tracks:
-            row = ctk.CTkFrame(
-                self.library_rows, fg_color=COLORS["surface"], corner_radius=10,
-                border_width=1, border_color=COLORS["line"],
-            )
-            row.pack(fill="x", pady=(0, 8))
+        last_index = len(state.tracks) - 1
+        for index, record in enumerate(state.tracks):
+            # A flat divided list, not individual bordered cards -- the row
+            # itself carries no background or border; a hairline divider
+            # below (skipped after the last row) marks the boundary instead.
+            row = ctk.CTkFrame(self.library_rows, fg_color="transparent")
+            row.pack(fill="x")
             body = ctk.CTkFrame(row, fg_color="transparent")
-            body.pack(fill="x", padx=14, pady=12)
+            body.pack(fill="x", padx=4, pady=14)
+            # Pack the interactive controls before the descriptive text so the
+            # fixed-width row-management labels below (title/artist/detail),
+            # which can request more space than a real row has, are what gets
+            # squeezed by Tk's packer on overflow — never Open/Retry/Remove.
+            remove_button = self._library_action_button(
+                body, "trash", lambda track_id=record.track_id: self._remove_library_track(track_id), danger=True,
+            )
+            remove_button.set_enabled(record.status not in {"preparing", "processing"})
+            remove_button.frame.library_action = "remove"
+            remove_button.frame.library_button = remove_button
+            remove_button.frame.pack(side="right", padx=(8, 0))
+            if record.status == "ready":
+                open_button = self._library_action_button(
+                    body, "play", lambda track_id=record.track_id: self._open_library_track(track_id), danger=False,
+                )
+                open_button.frame.library_action = "open"
+                open_button.frame.library_button = open_button
+                open_button.frame.pack(side="right", padx=(8, 0))
+            elif record.status in {"failed", "interrupted", "unavailable"}:
+                retry_button = self._library_action_button(
+                    body, "loop", lambda track_id=record.track_id: self.library_controller.retry(track_id), danger=False,
+                )
+                retry_button.frame.library_action = "retry"
+                retry_button.frame.library_button = retry_button
+                retry_button.frame.pack(side="right", padx=(8, 0))
+            color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
+            dot = ctk.CTkFrame(body, width=8, height=8, corner_radius=4, fg_color=color)
+            dot.pack_propagate(False)
+            dot.pack(side="left", padx=(2, 10))
             title = ctk.CTkLabel(
                 body, text=record.title, text_color=COLORS["text"],
                 font=("Segoe UI", 12, "bold"), anchor="w", width=210,
@@ -788,31 +864,14 @@ class StemslayerApp:
             ctk.CTkLabel(
                 body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 9),
                 anchor="w", width=235,
-            ).pack(side="left", padx=(8, 0))
-            color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
-            ctk.CTkLabel(
-                body, text=record.status.upper(), text_color=color, font=("Segoe UI", 9, "bold"), width=78,
-            ).pack(side="left", padx=(6, 0))
-            if record.status == "ready":
-                ctk.CTkButton(
-                    body, text="Open", width=58, height=28, command=lambda track_id=record.track_id: self._open_library_track(track_id),
-                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
-                ).pack(side="left", padx=(6, 0))
-            elif record.status in {"failed", "interrupted", "unavailable"}:
-                ctk.CTkButton(
-                    body, text="Retry", width=58, height=28, command=lambda track_id=record.track_id: self.library_controller.retry(track_id),
-                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
-                ).pack(side="left", padx=(6, 0))
-            ctk.CTkButton(
-                body, text="Remove", width=62, height=28, command=lambda track_id=record.track_id: self._remove_library_track(track_id),
-                fg_color="transparent", hover_color=COLORS["field"], text_color=COLORS["muted"],
-                state="disabled" if record.status in {"preparing", "processing"} else "normal",
-            ).pack(side="right", padx=(6, 0))
+            ).pack(side="left", padx=(8, 0), fill="x", expand=True)
             if record.error_detail:
                 ctk.CTkLabel(
                     row, text=record.error_detail, text_color=COLORS["muted"], font=("Segoe UI", 9),
                     anchor="w", justify="left", wraplength=720,
-                ).pack(fill="x", padx=14, pady=(0, 10))
+                ).pack(fill="x", padx=4, pady=(0, 10))
+            if index != last_index:
+                ctk.CTkFrame(self.library_rows, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x")
 
     @staticmethod
     def _track_duration(record: TrackRecord) -> str:
@@ -962,6 +1021,22 @@ class StemslayerApp:
             icon=icon,
             icon_size=icon_size,
             active_color=COLORS["accent"],
+        )
+
+    def _library_action_button(self, parent, icon: str, command, *, danger: bool) -> _RoundButton:
+        """A tinted, icon-only row action (Open/Retry in gold, Remove in red)."""
+        rest = LIBRARY_ACTION_TINTS["error_rest" if danger else "accent_rest"]
+        hover = LIBRARY_ACTION_TINTS["error_hover" if danger else "accent_hover"]
+        return _RoundButton(
+            parent,
+            diameter=32,
+            fg=rest,
+            fg_disabled=LIBRARY_ACTION_TINTS["error_disabled"],
+            icon_color=COLORS["error"] if danger else COLORS["accent"],
+            command=command,
+            icon=icon,
+            icon_size=18,
+            hover_fg=hover,
         )
 
     def _build_transport(self, shell) -> None:
