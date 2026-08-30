@@ -122,11 +122,11 @@ class SeparationController:
             phase = "unavailable"
         elif has_input:
             headline = "Ready to separate"
-            detail = f"{len(profile.lanes)} WAV files will be prepared for the mixer."
+            detail = profile.note or f"{len(profile.lanes)} WAV files will be prepared for the mixer."
             phase = "ready"
         else:
             headline = "Choose a song to separate"
-            detail = f"The result will contain {_lane_summary(profile)}."
+            detail = profile.note or f"The result will contain {_lane_summary(profile)}."
             phase = "idle"
         self._set_state(
             replace(

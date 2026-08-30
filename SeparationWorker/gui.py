@@ -52,6 +52,8 @@ LANE_COLORS = {
     "bass": "#87A987",
     "lead_guitar": "#C09A6B",
     "rhythm_guitar": "#7F94A8",
+    "guitar_center": "#C09A6B",
+    "guitar_sides": "#7F94A8",
     "other": "#8BA4B0",
 }
 LANE_ICONS = {"vocals": "mic", "drums": "drum", "bass": "bass"}
@@ -66,7 +68,41 @@ CHANNEL_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six",
 # matching the top one; test_gui_lane_rendering measures and enforces it.
 SEPARATION_CONTENT_TOP = 30
 SEPARATION_VIEW_HEIGHT = 764
-MIXER_VIEW_HEIGHT = 720
+
+# The mixer sizes itself to the lane strip instead of squeezing the strip into
+# a fixed window. Every lane keeps LANE_HEIGHT whatever the profile publishes,
+# because a shared height that shrinks per lane silently clips the controls at
+# the bottom of each lane, and Tk reports no error when it does.
+LANE_CONTENT_HEIGHT = 96
+LANE_INNER_PAD = 10
+LANE_GAP = 12
+# One continuous line across the whole strip, so the position reads at a
+# glance instead of being redrawn per lane and broken by every lane gap.
+PLAYHEAD_WIDTH = 2
+SKIP_SECONDS = 10.0
+LANE_HEIGHT = LANE_CONTENT_HEIGHT + 2 * LANE_INNER_PAD
+# The mixer height that is not lane strip. This is only the fallback used
+# before the widgets exist; the live value is measured from the header and the
+# transport, because a hand-carried constant goes stale the moment either of
+# them gains a row and then quietly squeezes the strip.
+MIXER_CHROME_HEIGHT = 261
+HEADER_PAD = (22, 14)
+TRANSPORT_PAD = (16, 20)
+MIXER_MIN_LANES = 4
+# Leave room for the taskbar and window decorations when capping to the screen.
+SCREEN_MARGIN = 80
+
+
+def lane_strip_height(lane_count: int) -> int:
+    """Return the height the lane strip needs for this many lanes."""
+    lane_count = max(1, lane_count)
+    return lane_count * LANE_HEIGHT + (lane_count - 1) * LANE_GAP
+
+
+def mixer_view_height(lane_count: int, chrome: int = MIXER_CHROME_HEIGHT) -> int:
+    """Return the mixer height that shows every lane without clipping."""
+    return chrome + lane_strip_height(max(lane_count, MIXER_MIN_LANES))
+
 
 
 def channel_word(count: int) -> str:
@@ -151,6 +187,47 @@ def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
         canvas.create_oval(size / 2 - 1.5, size * 0.68, size / 2 + 1.5, size * 0.68 + 3, fill=color, outline="", tags="icon")
     elif kind == "dot":
         canvas.create_oval(size * 0.35, size * 0.35, size * 0.65, size * 0.65, fill=color, outline="", tags="icon")
+    elif kind in {"rewind", "forward"}:
+        # One glyph drawn in both directions, so the pair always reads as a
+        # matched set instead of two hand-tuned triangles that drift apart.
+        top, bottom, middle = size * 0.24, size * 0.76, size / 2
+        base, tip = size * 0.08, size * 0.46
+        for offset in (0.0, size * 0.44):
+            x_base, x_tip = base + offset, tip + offset
+            if kind == "rewind":
+                x_base, x_tip = size - x_base, size - x_tip
+            canvas.create_polygon(
+                x_base, top, x_base, bottom, x_tip, middle, fill=color, outline="", tags="icon"
+            )
+    elif kind == "loop":
+        canvas.create_arc(
+            size * 0.16, size * 0.2, size * 0.84, size * 0.88,
+            start=20, extent=300, style="arc", outline=color, width=2, tags="icon",
+        )
+        canvas.create_polygon(
+            size * 0.62, size * 0.12, size * 0.92, size * 0.26, size * 0.62, size * 0.4,
+            fill=color, outline="", tags="icon",
+        )
+    elif kind in {"volume", "volume_off"}:
+        canvas.create_polygon(
+            size * 0.1, size * 0.36, size * 0.28, size * 0.36, size * 0.48, size * 0.16,
+            size * 0.48, size * 0.84, size * 0.28, size * 0.64, size * 0.1, size * 0.64,
+            fill=color, outline="", tags="icon",
+        )
+        if kind == "volume":
+            for extent in (0.62, 0.82):
+                canvas.create_arc(
+                    size * (1.16 - extent), size * (0.5 - extent / 2),
+                    size * (0.16 + extent), size * (0.5 + extent / 2),
+                    start=-55, extent=110, style="arc", outline=color, width=2, tags="icon",
+                )
+        else:
+            canvas.create_line(
+                size * 0.62, size * 0.36, size * 0.92, size * 0.66, fill=color, width=2, tags="icon"
+            )
+            canvas.create_line(
+                size * 0.92, size * 0.36, size * 0.62, size * 0.66, fill=color, width=2, tags="icon"
+            )
 
 
 def _icon(parent: tk.Widget, kind: str, size: int, color: str, bg: str) -> tk.Canvas:
@@ -162,24 +239,48 @@ def _icon(parent: tk.Widget, kind: str, size: int, color: str, bg: str) -> tk.Ca
 class _RoundButton:
     """A circular, icon-only transport button (plain Tk/CTk has no built-in one)."""
 
-    def __init__(self, parent: tk.Widget, *, diameter: int, fg: str, fg_disabled: str, icon_color: str, command: Callable[[], None]):
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        diameter: int,
+        fg: str,
+        fg_disabled: str,
+        icon_color: str,
+        command: Callable[[], None],
+        icon: str = "play",
+        icon_size: int | None = None,
+        active_color: str | None = None,
+    ):
         self._fg = fg
         self._fg_disabled = fg_disabled
         self._icon_color = icon_color
-        self._icon_kind = "play"
+        self._active_color = active_color or icon_color
+        self._active = False
+        self._icon_kind = icon
         self._command = command
         self._enabled = True
         self.frame = ctk.CTkFrame(parent, width=diameter, height=diameter, corner_radius=diameter // 2, fg_color=fg)
         self.frame.pack_propagate(False)
-        self._size = diameter
-        self.canvas = tk.Canvas(self.frame, width=diameter, height=diameter, bg=fg, highlightthickness=0, cursor="hand2")
+        self._size = icon_size or diameter
+        self.canvas = tk.Canvas(
+            self.frame, width=self._size, height=self._size, bg=fg, highlightthickness=0, cursor="hand2"
+        )
         self.canvas.pack(expand=True)
         self.canvas.bind("<Button-1>", self._on_click)
         self._redraw()
 
     def _redraw(self) -> None:
-        color = self._icon_color if self._enabled else COLORS["muted2"]
+        if not self._enabled:
+            color = COLORS["muted2"]
+        else:
+            color = self._active_color if self._active else self._icon_color
         _draw_icon(self.canvas, self._icon_kind, self._size, color)
+
+    def set_active(self, active: bool) -> None:
+        """Mark a toggle as engaged, so a latched button looks latched."""
+        self._active = bool(active)
+        self._redraw()
 
     def set_icon(self, kind: str) -> None:
         self._icon_kind = kind
@@ -318,7 +419,11 @@ class StemslayerApp:
         self._waveform_session = None
         self._waveform_canvases: dict[str, tk.Canvas] = {}
         self._lane_widgets: dict[str, dict[str, object]] = {}
-        self._lanes_container: ctk.CTkFrame | None = None
+        self._lanes_container: ctk.CTkScrollableFrame | None = None
+        self._lane_frames: list[ctk.CTkFrame] = []
+        self._playhead: tk.Frame | None = None
+        self._mixer_header: ctk.CTkFrame | None = None
+        self._mixer_transport: ctk.CTkFrame | None = None
         self._lane_rows: tuple[tuple[str, str, str, bool], ...] = ()
         self._chips_frame: ctk.CTkFrame | None = None
         self._chip_lane_ids: tuple[str, ...] = ()
@@ -332,9 +437,12 @@ class StemslayerApp:
         self.status_detail = tk.StringVar()
         self.hero_headline = tk.StringVar()
         self.hero_subtitle = tk.StringVar()
+        self.mixer_title = tk.StringVar(value=f"{channel_word(4)} stems. One shared timeline.")
         self.mixer_headline = tk.StringVar(value="Choose a four-stem folder")
         self.mixer_detail = tk.StringVar(value="Load vocals.wav, drums.wav, bass.wav, and other.wav to begin.")
-        self.mixer_time = tk.StringVar(value="00:00.00 / 00:00.00")
+        self.mixer_position_time = tk.StringVar(value="00:00.00")
+        self.mixer_duration_time = tk.StringVar(value="00:00.00")
+        self._master_percent_before_mute = 100
 
         self._build()
         self.controller = SeparationController(
@@ -602,16 +710,18 @@ class StemslayerApp:
     def _build_mixer_view(self) -> None:
         shell = self.mixer_view
         shell.grid_columnconfigure(0, weight=1)
-        shell.grid_rowconfigure(2, weight=1)
+        # The lane strip takes the free height; the transport keeps its own.
+        shell.grid_rowconfigure(1, weight=1)
 
         header = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
-        header.grid(row=0, column=0, padx=32, pady=(22, 0), sticky="ew")
+        header.grid(row=0, column=0, padx=32, pady=HEADER_PAD, sticky="ew")
+        self._mixer_header = header
         header.grid_columnconfigure(0, weight=1)
         title_box = ctk.CTkFrame(header, fg_color="transparent")
         title_box.grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(title_box, text="Four stems. One shared timeline.", text_color=COLORS["text"], font=("Segoe UI", 18, "bold")).pack(
-            anchor="w"
-        )
+        ctk.CTkLabel(
+            title_box, textvariable=self.mixer_title, text_color=COLORS["text"], font=("Segoe UI", 18, "bold")
+        ).pack(anchor="w")
         ctk.CTkLabel(
             title_box,
             textvariable=self.mixer_detail,
@@ -621,10 +731,39 @@ class StemslayerApp:
             justify="left",
             wraplength=680,
         ).pack(anchor="w", pady=(3, 0))
-        self.load_folder_button = ctk.CTkButton(
-            header,
-            text="Load stems folder",
-            command=self._pick_stems_folder,
+        buttons = ctk.CTkFrame(header, fg_color="transparent")
+        buttons.grid(row=0, column=1, sticky="e")
+        self.load_folder_button = self._outline_button(buttons, "Load stems folder", self._pick_stems_folder)
+        self.load_folder_button.grid(row=0, column=0, padx=(0, 8))
+        self.export_button = self._outline_button(buttons, "Export", self._open_export_dialog)
+        self.export_button.grid(row=0, column=1)
+
+        self._lanes_container = ctk.CTkScrollableFrame(
+            shell,
+            fg_color=COLORS["window"],
+            corner_radius=0,
+            scrollbar_button_color=COLORS["line_strong"],
+            scrollbar_button_hover_color=COLORS["muted"],
+        )
+        self._lanes_container.grid(row=1, column=0, padx=(32, 20), pady=0, sticky="nsew")
+        self._lanes_container.grid_columnconfigure(0, weight=1)
+        # One overlay line, a sibling of the lanes rather than a stroke drawn
+        # inside each of them, so it crosses the gaps between lanes unbroken.
+        self._playhead = tk.Frame(self._lanes_container, bg=COLORS["accent"], width=PLAYHEAD_WIDTH)
+        for event, handler in (
+            ("<Button-1>", self._seek_press),
+            ("<B1-Motion>", self._seek_motion),
+            ("<ButtonRelease-1>", self._seek_release),
+        ):
+            self._playhead.bind(event, handler)
+        self._build_lanes(self._mixer_model.lane_rows)
+        self._build_transport(shell)
+
+    def _outline_button(self, parent, text: str, command) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            parent,
+            text=text,
+            command=command,
             fg_color="transparent",
             hover_color=COLORS["field"],
             border_width=1,
@@ -633,56 +772,95 @@ class StemslayerApp:
             corner_radius=8,
             font=("Segoe UI", 11, "bold"),
         )
-        self.load_folder_button.grid(row=0, column=1, sticky="e")
 
+    def _flat_button(self, parent, icon: str, command, *, diameter: int, icon_size: int) -> _RoundButton:
+        return _RoundButton(
+            parent,
+            diameter=diameter,
+            fg=COLORS["window"],
+            fg_disabled=COLORS["window"],
+            icon_color=COLORS["text"],
+            command=command,
+            icon=icon,
+            icon_size=icon_size,
+            active_color=COLORS["accent"],
+        )
+
+    def _build_transport(self, shell) -> None:
+        """Build the playback bar that sits under the lane strip.
+
+        Every control here drives the playback engine. A transport that shows
+        a button it cannot honour is worse than one that shows fewer.
+        """
         transport = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
-        transport.grid(row=1, column=0, padx=32, pady=(20, 16), sticky="ew")
-        transport.grid_columnconfigure(2, weight=1)
+        transport.grid(row=2, column=0, padx=32, pady=TRANSPORT_PAD, sticky="ew")
+        self._mixer_transport = transport
+        transport.grid_columnconfigure(0, weight=1)
 
+        cluster = ctk.CTkFrame(transport, fg_color="transparent")
+        cluster.grid(row=0, column=0)
+
+        self.master_button = self._flat_button(
+            cluster, "volume", self._toggle_master_mute, diameter=32, icon_size=20
+        )
+        self.master_button.frame.grid(row=0, column=0, padx=(0, 8))
+        self.master_slider = ctk.CTkSlider(
+            cluster,
+            from_=0,
+            to=100,
+            width=88,
+            height=12,
+            fg_color=COLORS["field"],
+            progress_color=COLORS["muted"],
+            button_color=COLORS["text"],
+            button_hover_color=COLORS["text"],
+            command=self._master_volume_changed,
+        )
+        self.master_slider.set(100)
+        self.master_slider.grid(row=0, column=1, padx=(0, 30))
+
+        self.rewind_button = self._flat_button(
+            cluster, "rewind", lambda: self._skip(-SKIP_SECONDS), diameter=40, icon_size=22
+        )
+        self.rewind_button.frame.grid(row=0, column=2, padx=(0, 12))
         self.play_button = _RoundButton(
-            transport,
+            cluster,
             diameter=52,
             fg=COLORS["accent"],
             fg_disabled=COLORS["field"],
             icon_color=COLORS["accent_text"],
             command=self._toggle_play,
         )
-        self.play_button.frame.grid(row=0, column=0, sticky="w")
-
-        self.mixer_status = ctk.CTkLabel(
-            transport, textvariable=self.mixer_headline, text_color=COLORS["text"], font=("Segoe UI", 11, "bold"), anchor="w"
+        self.play_button.frame.grid(row=0, column=3)
+        self.forward_button = self._flat_button(
+            cluster, "forward", lambda: self._skip(SKIP_SECONDS), diameter=40, icon_size=22
         )
-        self.mixer_status.grid(row=0, column=1, padx=(14, 14), sticky="w")
+        self.forward_button.frame.grid(row=0, column=4, padx=(12, 30))
+        self.loop_button = self._flat_button(
+            cluster, "loop", self._toggle_looping, diameter=32, icon_size=20
+        )
+        self.loop_button.frame.grid(row=0, column=5)
 
-        self.timeline = tk.Canvas(transport, height=26, bg=COLORS["window"], highlightthickness=0)
-        self.timeline.grid(row=0, column=2, sticky="ew")
+        scrub = ctk.CTkFrame(transport, fg_color="transparent")
+        scrub.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+        scrub.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            scrub, textvariable=self.mixer_position_time, text_color=COLORS["muted"], font=("Consolas", 10), width=46
+        ).grid(row=0, column=0, padx=(0, 12))
+        self.timeline = tk.Canvas(scrub, height=22, bg=COLORS["window"], highlightthickness=0)
+        self.timeline.grid(row=0, column=1, sticky="ew")
         self.timeline.bind("<Button-1>", self._seek_press)
         self.timeline.bind("<B1-Motion>", self._seek_motion)
         self.timeline.bind("<ButtonRelease-1>", self._seek_release)
         self.timeline.bind("<Configure>", lambda _event: self._draw_timeline())
-
         ctk.CTkLabel(
-            transport, textvariable=self.mixer_time, text_color=COLORS["muted"], font=("Consolas", 10)
-        ).grid(row=0, column=3, padx=(14, 14))
+            scrub, textvariable=self.mixer_duration_time, text_color=COLORS["muted"], font=("Consolas", 10), width=46
+        ).grid(row=0, column=2, padx=(12, 0))
 
-        self.export_button = ctk.CTkButton(
-            transport,
-            text="Export",
-            command=self._open_export_dialog,
-            fg_color="transparent",
-            hover_color=COLORS["field"],
-            border_width=1,
-            border_color=COLORS["line_strong"],
-            text_color=COLORS["text"],
-            corner_radius=8,
-            font=("Segoe UI", 11, "bold"),
+        self.mixer_status = ctk.CTkLabel(
+            transport, textvariable=self.mixer_headline, text_color=COLORS["muted2"], font=("Segoe UI", 10), anchor="w"
         )
-        self.export_button.grid(row=0, column=4, sticky="e")
-
-        self._lanes_container = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
-        self._lanes_container.grid(row=2, column=0, padx=32, pady=(0, 22), sticky="nsew")
-        self._lanes_container.grid_columnconfigure(0, weight=1)
-        self._build_lanes(self._mixer_model.lane_rows)
+        self.mixer_status.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
     def _build_lanes(self, rows) -> None:
         """Rebuild one lane widget set per published lane, in profile order.
@@ -692,43 +870,70 @@ class StemslayerApp:
         would silently drop the extra lanes of a six-lane result.
         """
         container = self._lanes_container
-        for child in container.winfo_children():
-            child.destroy()
-        for index in range(len(self._lane_rows)):
-            container.grid_rowconfigure(index, weight=0, uniform="")
+        # Destroy only the lanes this method built. The playhead overlay is a
+        # sibling of the lanes and has to survive a relayout, so the strip
+        # cannot simply clear every child of its container.
+        for frame in self._lane_frames:
+            frame.destroy()
+        self._lane_frames.clear()
         self._lane_widgets.clear()
         self._waveform_canvases.clear()
         for index, row in enumerate(rows):
-            container.grid_rowconfigure(index, weight=1, uniform="lane")
             self._build_lane(container, index, *row)
         self._lane_rows = tuple(rows)
         # The canvases the previous layout drew into are gone, so force a
         # redraw rather than trusting the unchanged session identity.
         self._waveform_session = None
+        self._resize_for_lanes(len(rows))
 
     def _build_lane(self, container, index: int, stem_name: str, label: str, color: str, absent: bool) -> None:
-        lane = ctk.CTkFrame(container, fg_color=COLORS["surface"], corner_radius=12, border_width=1, border_color=COLORS["line"])
-        lane.grid(row=index, column=0, pady=(0 if index == 0 else 10, 0), sticky="nsew")
+        lane = ctk.CTkFrame(
+            container,
+            height=LANE_HEIGHT,
+            fg_color=COLORS["surface"],
+            corner_radius=12,
+            border_width=1,
+            border_color=COLORS["line"],
+        )
+        lane.grid(row=index, column=0, pady=(0 if index == 0 else LANE_GAP, 0), sticky="ew")
+        # Every lane keeps its full height whatever the profile publishes. A
+        # strip that shares one height between lanes shrinks each of them as
+        # lanes are added, and Tk clips the bottom controls without a word.
+        lane.grid_propagate(False)
         lane.grid_columnconfigure(1, weight=1)
         lane.grid_rowconfigure(0, weight=1)
 
-        controls = ctk.CTkFrame(lane, width=190, height=104, fg_color=COLORS["surface"], corner_radius=0)
-        controls.grid(row=0, column=0, padx=(4, 8), pady=10, sticky="nsw")
+        controls = ctk.CTkFrame(lane, width=250, fg_color=COLORS["surface"], corner_radius=0)
+        controls.grid(row=0, column=0, padx=(4, 10), pady=LANE_INNER_PAD, sticky="nsw")
         controls.grid_propagate(False)
-        bar = tk.Canvas(controls, width=4, height=84, bg=COLORS["line"] if absent else color, highlightthickness=0)
-        bar.grid(row=0, column=0, rowspan=3, sticky="ns", padx=(10, 0))
+        # Spacer rows above and below centre the controls in the lane, so the
+        # strip reads as evenly spaced rather than top-packed.
+        controls.grid_rowconfigure(0, weight=1)
+        controls.grid_rowconfigure(3, weight=1)
+        bar = tk.Canvas(controls, width=4, bg=COLORS["line"] if absent else color, highlightthickness=0)
+        bar.grid(row=0, column=0, rowspan=4, sticky="ns", padx=(10, 0), pady=6)
+        # Mute and solo lead the row: they are the controls this mixer exists
+        # for, and a name of any length can no longer push them out of view.
+        # They live in their own frame so the slider below cannot widen the
+        # columns they sit in and drive them apart.
+        head = ctk.CTkFrame(controls, fg_color="transparent")
+        head.grid(row=1, column=1, columnspan=2, padx=(10, 0), pady=(0, 8), sticky="w")
+        mute = self._lane_toggle(head, "M", lambda name=stem_name: self._toggle_mute(name))
+        mute.grid(row=0, column=0, padx=(0, 4))
+        solo = self._lane_toggle(head, "S", lambda name=stem_name: self._toggle_solo(name))
+        solo.grid(row=0, column=1, padx=(0, 12))
         ctk.CTkLabel(
-            controls,
+            head,
             text=label,
             text_color=COLORS["muted"] if absent else COLORS["text"],
             font=("Segoe UI", 9 if absent else 11, "bold"),
             anchor="w",
-        ).grid(row=0, column=1, columnspan=3, padx=(10, 0), sticky="w")
+        ).grid(row=0, column=2, sticky="w")
         scale = ctk.CTkSlider(
             controls,
             from_=0,
             to=100,
-            width=112,
+            width=152,
             height=14,
             fg_color=COLORS["line"],
             progress_color=color,
@@ -737,46 +942,82 @@ class StemslayerApp:
             command=lambda value, name=stem_name: self._volume_changed(name, value),
         )
         scale.set(100)
-        scale.grid(row=1, column=1, columnspan=2, padx=(10, 2), pady=(8, 0), sticky="w")
+        scale.grid(row=2, column=1, padx=(10, 6), sticky="w")
         percent = ctk.CTkLabel(controls, text="100%", width=34, anchor="e", text_color=COLORS["muted"], font=("Consolas", 9))
-        percent.grid(row=1, column=3, pady=(8, 0), sticky="e")
-        mute = ctk.CTkButton(
-            controls,
-            text="M",
-            width=26,
-            height=22,
-            corner_radius=6,
-            fg_color=COLORS["field"],
-            hover_color=COLORS["line"],
-            text_color=COLORS["muted"],
-            text_color_disabled=COLORS["disabled"],
-            font=("Segoe UI", 9, "bold"),
-            command=lambda name=stem_name: self._toggle_mute(name),
-        )
-        mute.grid(row=2, column=1, padx=(10, 3), pady=(8, 0), sticky="w")
-        solo = ctk.CTkButton(
-            controls,
-            text="S",
-            width=26,
-            height=22,
-            corner_radius=6,
-            fg_color=COLORS["field"],
-            hover_color=COLORS["line"],
-            text_color=COLORS["muted"],
-            text_color_disabled=COLORS["disabled"],
-            font=("Segoe UI", 9, "bold"),
-            command=lambda name=stem_name: self._toggle_solo(name),
-        )
-        solo.grid(row=2, column=2, padx=3, pady=(8, 0), sticky="w")
+        percent.grid(row=2, column=2, sticky="w")
 
         canvas = tk.Canvas(lane, bg=COLORS["surface"], highlightthickness=0)
-        canvas.grid(row=0, column=1, padx=(0, 12), pady=10, sticky="nsew")
+        canvas.grid(row=0, column=1, padx=(0, 12), pady=LANE_INNER_PAD, sticky="nsew")
         canvas.bind("<Button-1>", self._seek_press)
         canvas.bind("<B1-Motion>", self._seek_motion)
         canvas.bind("<ButtonRelease-1>", self._seek_release)
         canvas.bind("<Configure>", lambda _event: self._draw_waveforms())
+        self._lane_frames.append(lane)
         self._waveform_canvases[stem_name] = canvas
-        self._lane_widgets[stem_name] = {"scale": scale, "percent": percent, "mute": mute, "solo": solo, "color": color}
+        self._lane_widgets[stem_name] = {
+            "lane": lane,
+            "controls": controls,
+            "scale": scale,
+            "percent": percent,
+            "mute": mute,
+            "solo": solo,
+            "color": color,
+        }
+
+    def _lane_toggle(self, parent, text: str, command) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            parent,
+            text=text,
+            width=26,
+            height=22,
+            corner_radius=6,
+            fg_color=COLORS["field"],
+            hover_color=COLORS["line"],
+            text_color=COLORS["muted"],
+            text_color_disabled=COLORS["disabled"],
+            font=("Segoe UI", 9, "bold"),
+            command=command,
+        )
+
+    def _resize_for_lanes(self, lane_count: int) -> None:
+        """Grow the mixer window so every lane keeps its full height.
+
+        The strip scrolls when the screen cannot hold it, so a capped window
+        stays usable instead of hiding the lanes it cannot fit.
+        """
+        self.mixer_title.set(f"{channel_word(lane_count)} stems. One shared timeline.")
+        if self._view != "mixer":
+            return
+        self._apply_mixer_geometry(lane_count)
+
+    def mixer_chrome_height(self) -> int:
+        """Return the mixer height taken by everything but the lane strip.
+
+        Derived from what Tk says the view needs once the strip asks for its
+        real height. Adding up paddings by hand is what let the window go on
+        being sized for a transport that had already grown a row.
+        """
+        if self._lanes_container is None:
+            return MIXER_CHROME_HEIGHT
+        return max(0, self._mixer_required_height() - self._lanes_container.winfo_reqheight())
+
+    def _mixer_required_height(self) -> int:
+        """Return the height the mixer needs with the strip at full size."""
+        self.root.update_idletasks()
+        return self.mixer_view.winfo_reqheight()
+
+    def _apply_mixer_geometry(self, lane_count: int) -> None:
+        if self._lanes_container is None:
+            return
+        # The strip asks for its real height instead of relying on leftover
+        # space, so Tk reports what the whole view needs and nothing has to
+        # re-derive it from hand-counted paddings.
+        self._lanes_container.configure(height=lane_strip_height(lane_count))
+        available = self.root.winfo_screenheight() - SCREEN_MARGIN
+        wanted = self._mixer_required_height() + NAV_HEIGHT + 1
+        self.root.geometry(f"1120x{min(wanted, available)}")
+        floor = self.mixer_chrome_height() + lane_strip_height(MIXER_MIN_LANES) + NAV_HEIGHT + 1
+        self.root.minsize(880, min(floor, available))
 
     def _pick_input(self) -> None:
         selected = filedialog.askopenfilename(
@@ -786,7 +1027,7 @@ class StemslayerApp:
             self.controller.set_input_file(selected)
 
     def _pick_stems_folder(self) -> None:
-        selected = filedialog.askdirectory(parent=self.root, title="Choose a folder with four WAV stems")
+        selected = filedialog.askdirectory(parent=self.root, title="Choose a folder with published WAV stems")
         if selected:
             self._open_mixer_folder(selected, title=Path(selected).name)
 
@@ -961,8 +1202,8 @@ class StemslayerApp:
         if view == "mixer":
             self.separation_view.grid_remove()
             self.mixer_view.grid(row=0, column=0, sticky="nsew")
-            self.root.geometry(f"1120x{MIXER_VIEW_HEIGHT + NAV_HEIGHT + 1}")
-            self.root.minsize(800, 621)
+            self._view = view
+            self._apply_mixer_geometry(len(self._lane_rows))
         else:
             self.mixer_view.grid_remove()
             self.separation_view.grid(row=0, column=0, sticky="nsew")
@@ -1014,15 +1255,24 @@ class StemslayerApp:
             self._build_lanes(model.lane_rows)
         self.mixer_headline.set(state.headline)
         self.mixer_detail.set(state.detail)
-        self.mixer_time.set(f"{format_time(model.position_seconds)} / {format_time(model.duration_seconds)}")
+        self.mixer_position_time.set(format_time(model.position_seconds))
+        self.mixer_duration_time.set(format_time(model.duration_seconds))
         self.play_button.set_icon("pause" if state.playing else "play")
         self.play_button.set_enabled(state.can_play)
+        for button in (self.rewind_button, self.forward_button, self.loop_button, self.master_button):
+            button.set_enabled(state.can_play)
+        self.loop_button.set_active(state.looping)
+        self.master_button.set_icon("volume_off" if state.master_percent == 0 else "volume")
+        self.master_button.set_active(state.master_percent == 0)
         export_ready = state.session is not None and state.phase in {"ready", "playing"}
         self.export_button.configure(state="normal" if export_ready else "disabled")
         self._tab_buttons["export"].configure(state="normal" if export_ready else "disabled")
         self.load_folder_button.configure(state="disabled" if state.phase == "loading" else "normal")
         self._syncing_controls = True
         try:
+            self.master_slider.configure(state="normal" if state.can_play else "disabled")
+            if int(self.master_slider.get()) != state.master_percent:
+                self.master_slider.set(state.master_percent)
             for stem_name, widgets in self._lane_widgets.items():
                 setting = next((item for item in state.settings.settings if item.name == stem_name), None)
                 enabled = state.session is not None and state.phase in {"ready", "playing"}
@@ -1048,7 +1298,6 @@ class StemslayerApp:
         for stem_name, canvas in self._waveform_canvases.items():
             canvas.delete("waveform")
             if session is None:
-                self._draw_playheads()
                 continue
             try:
                 peaks = session.peaks_for(stem_name)
@@ -1067,16 +1316,34 @@ class StemslayerApp:
             canvas.create_line(0, center, width, center, fill=COLORS["line"], tags="waveform")
         self._draw_playheads()
 
+    def _waveform_origin(self) -> tuple[tk.Canvas | None, int]:
+        """Return the first waveform canvas and its x inside the lane strip.
+
+        Every lane is built identically, so one canvas describes where the
+        waveform area starts for all of them.
+        """
+        canvas = next(iter(self._waveform_canvases.values()), None)
+        if canvas is None:
+            return None, 0
+        return canvas, canvas.winfo_x() + canvas.master.winfo_x()
+
     def _draw_playheads(self) -> None:
-        ratio = self._mixer_model.preview_ratio
-        for canvas in self._waveform_canvases.values():
-            canvas.delete("playhead")
-            width = canvas.winfo_width()
-            height = canvas.winfo_height()
-            if width <= 1 or height <= 1:
-                continue
-            x = max(0.0, min(float(width - 1), ratio * width))
-            canvas.create_line(x, 0, x, height, fill=COLORS["accent"], width=2, tags="playhead")
+        """Move the single overlay line that crosses every lane.
+
+        Drawing one stroke per lane leaves the position broken at every lane
+        gap. A sibling widget over the whole strip reads as one line, which is
+        what a shared timeline actually is.
+        """
+        if self._playhead is None:
+            return
+        canvas, origin = self._waveform_origin()
+        width = canvas.winfo_width() if canvas is not None else 0
+        if canvas is None or width <= 1:
+            self._playhead.place_forget()
+            return
+        offset = max(0.0, min(float(width - PLAYHEAD_WIDTH), self._mixer_model.preview_ratio * width))
+        self._playhead.place(x=int(origin + offset), y=0, relheight=1.0, width=PLAYHEAD_WIDTH)
+        self._playhead.lift()
 
     def _rounded_bar(self, canvas: tk.Canvas, x0: float, y0: float, x1: float, y1: float, radius: float, color: str) -> None:
         if x1 <= x0:
@@ -1104,8 +1371,16 @@ class StemslayerApp:
 
     def _seek_frame_at(self, event) -> int:
         widget = event.widget
-        width = max(1, widget.winfo_width())
-        return self._mixer_model.frame_for_pixel(event.x, width)
+        if widget is self._playhead:
+            # The overlay sits above the lanes, so a press that lands on the
+            # line itself must still resolve against the waveform it marks.
+            canvas, origin = self._waveform_origin()
+            if canvas is None:
+                return 0
+            return self._mixer_model.frame_for_pixel(
+                self._playhead.winfo_x() - origin + event.x, max(1, canvas.winfo_width())
+            )
+        return self._mixer_model.frame_for_pixel(event.x, max(1, widget.winfo_width()))
 
     def _seek_press(self, event) -> None:
         if not self._mixer_model.frame_count or not self.mixer_controller.state.can_play:
@@ -1135,6 +1410,28 @@ class StemslayerApp:
             self._preview_frame = None
         self._draw_playheads()
         self._draw_timeline()
+
+    def _skip(self, seconds: float) -> None:
+        self.mixer_controller.nudge(seconds)
+
+    def _toggle_looping(self) -> None:
+        self.mixer_controller.toggle_looping()
+
+    def _toggle_master_mute(self) -> None:
+        """Drop the master to silence, and back to where it was."""
+        current = self.mixer_controller.state.master_percent
+        if current > 0:
+            self._master_percent_before_mute = current
+            self.mixer_controller.set_master_percent(0)
+        else:
+            self.mixer_controller.set_master_percent(self._master_percent_before_mute or 100)
+
+    def _master_volume_changed(self, value: float | str) -> None:
+        percent = float(value)
+        if percent > 0:
+            self._master_percent_before_mute = int(round(percent))
+        if not self._syncing_controls and self.mixer_controller.state.session is not None:
+            self.mixer_controller.set_master_percent(percent)
 
     def _toggle_play(self) -> None:
         if self.mixer_controller.state.playing:

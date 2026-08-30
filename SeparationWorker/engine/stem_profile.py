@@ -18,12 +18,14 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from .pcm import AudioContractError
+from .stereo_split import SPLITTER_ID
 
 MANIFEST_NAME = "stem-result.json"
 MANIFEST_SCHEMA_VERSION = 1
 
 LEGACY_PROFILE_ID = "legacy-four-stem"
 METAL_PROFILE_ID = "metal-six-stem"
+METAL_STEREO_PROFILE_ID = "metal-stereo-six-stem"
 
 
 class StemProfileError(AudioContractError):
@@ -67,8 +69,13 @@ class StemProfile:
     residual_sources: tuple[str, ...] = ()
     specialist_input: str | None = None
     specialist_id: str | None = None
+    split_input: str | None = None
+    splitter_id: str | None = None
     enabled: bool = True
     accepts_manifestless_results: bool = False
+    # Shown when the profile is selected. Cosmetic, so it stays out of the
+    # pipeline fingerprint and never invalidates a cached result.
+    note: str = ""
 
     def __post_init__(self) -> None:
         if not self.lanes:
@@ -117,6 +124,25 @@ class StemProfile:
                 f"Profile {self.profile_id!r} requires a specialist but none is registered.",
                 "Admit a specialist before enabling this profile.",
             )
+        if self.specialist_input is not None and self.split_input is not None:
+            raise _error(
+                "profile.conflicting_decomposition",
+                f"Profile {self.profile_id!r} declares both a specialist and a splitter.",
+                "Decompose a stem one way only.",
+            )
+        if self.split_input is not None:
+            if self.split_input not in self.raw_outputs:
+                raise _error(
+                    "profile.unknown_split_input",
+                    f"The split input {self.split_input!r} is not produced by {self.primary_model!r}.",
+                    "Split a raw output the primary model actually emits.",
+                )
+            if not self.splitter_id:
+                raise _error(
+                    "profile.missing_splitter",
+                    f"Profile {self.profile_id!r} declares a split input with no splitter.",
+                    "Name the deterministic splitter that produces the lanes.",
+                )
 
     @property
     def lane_ids(self) -> tuple[str, ...]:
@@ -152,6 +178,8 @@ class StemProfile:
             "primary_model": self.primary_model,
             "specialist_id": self.specialist_id,
             "specialist_input": self.specialist_input,
+            "splitter_id": self.splitter_id,
+            "split_input": self.split_input,
             "raw_outputs": list(self.raw_outputs),
             "residual_sources": list(self.residual_sources),
             "lanes": list(self.lane_ids),
@@ -176,7 +204,7 @@ LEGACY_PROFILE = StemProfile(
 
 METAL_PROFILE = StemProfile(
     profile_id=METAL_PROFILE_ID,
-    display_name="Metal",
+    display_name="Metal Roles",
     lanes=(
         StemLane("vocals", "Vocals"),
         StemLane("drums", "Drums"),
@@ -194,8 +222,40 @@ METAL_PROFILE = StemProfile(
     accepts_manifestless_results=False,
 )
 
+# Stereo position is not a musical role. This profile splits the isolated
+# guitar by where it sits in the image, which in conventional metal production
+# usually puts solos in the centre and doubled rhythms on the sides. It cannot
+# tell a centred rhythm from a solo, so its lanes are named for position and
+# it is never presented as Lead/Rhythm separation. Nothing is admitted here:
+# the split is deterministic, with no weights and no license.
+METAL_STEREO_PROFILE = StemProfile(
+    profile_id=METAL_STEREO_PROFILE_ID,
+    display_name="Metal Stereo",
+    lanes=(
+        StemLane("vocals", "Vocals"),
+        StemLane("drums", "Drums"),
+        StemLane("bass", "Bass"),
+        StemLane("guitar_center", "Guitar Center", role_group="guitar", absentable=True),
+        StemLane("guitar_sides", "Guitar Sides", role_group="guitar", absentable=True),
+        StemLane("other", "Other", residual=True),
+    ),
+    primary_model="htdemucs_6s",
+    raw_outputs=("vocals", "drums", "bass", "guitar", "piano", "other"),
+    residual_sources=("piano", "other"),
+    split_input="guitar",
+    splitter_id=SPLITTER_ID,
+    enabled=True,
+    accepts_manifestless_results=False,
+    note=(
+        "Splits the isolated guitar by stereo position. In conventional metal production "
+        "solos usually sit in the centre and doubled rhythms on the sides, but position is "
+        "not role: a centred rhythm lands in the centre lane."
+    ),
+)
+
 PROFILES: Mapping[str, StemProfile] = {
     LEGACY_PROFILE.profile_id: LEGACY_PROFILE,
+    METAL_STEREO_PROFILE.profile_id: METAL_STEREO_PROFILE,
     METAL_PROFILE.profile_id: METAL_PROFILE,
 }
 

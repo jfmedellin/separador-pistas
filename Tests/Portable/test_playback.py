@@ -125,6 +125,81 @@ class PlaybackTests(unittest.TestCase):
             self.state_event.clear()
         self.fail("timed out waiting for playback state")
 
+    def test_looping_restarts_the_track_instead_of_stopping(self):
+        engine = self.make_engine()
+        engine.set_looping(True)
+        engine.play()
+
+        self.wait_until(lambda: len(self.streams) == 1 and len(self.streams[0].writes) >= 6)
+        engine.pause()
+
+        stream = self.streams[0]
+        # Eight frames at two per block is four blocks per pass; more than that
+        # can only come from the engine starting the track over.
+        self.assertGreaterEqual(len(stream.writes), 6)
+        self.assertFalse(stream.closed, "looping must keep the output device open")
+        self.assertTrue(all(reader.cursor <= self.frame_count for reader in self.readers))
+        engine.close()
+
+    def test_reaching_the_end_without_looping_still_stops(self):
+        engine = self.make_engine()
+        engine.play()
+
+        self.wait_until(lambda: self.states and not self.states[-1].playing and self.states[-1].position >= 8)
+
+        self.assertFalse(self.states[-1].playing)
+        self.assertFalse(self.states[-1].looping)
+        engine.close()
+
+    def test_the_master_gain_scales_the_finished_mix(self):
+        engine = self.make_engine()
+        # The readers emit 1+2+3+4 = 10, so trim the lanes to a mix that sums
+        # to exactly full scale. The master rides in front of the clip, the way
+        # a console fader sits before the converter, so measuring it needs a
+        # mix that is not already clipping.
+        engine.apply(MixerSnapshot(tuple(MixSetting(name, gain=0.1) for name in STEMS)))
+        engine.set_master_gain(0.5)
+        engine.play()
+
+        self.wait_until(lambda: self.streams and len(self.streams[0].writes) >= 1)
+        engine.pause()
+
+        first = self.streams[0].writes[0]
+        self.assertTrue(np.allclose(first, 0.5), f"expected a halved mix, got {first.ravel()[:4]}")
+        engine.close()
+
+    def test_the_master_gain_rides_in_front_of_the_output_clip(self):
+        """A hot lane sum still clips; the master cannot lift it back over."""
+        engine = self.make_engine()
+        engine.set_master_gain(0.5)
+        engine.play()
+
+        self.wait_until(lambda: self.streams and len(self.streams[0].writes) >= 1)
+        engine.pause()
+
+        self.assertTrue(np.allclose(self.streams[0].writes[0], 1.0))
+        engine.close()
+
+    def test_the_master_gain_is_reported_back_in_the_state(self):
+        engine = self.make_engine()
+
+        engine.set_master_gain(0.25)
+        engine.seek(0)
+        self.wait_until(lambda: self.states and self.states[-1].master_gain == 0.25)
+
+        self.assertEqual(0.25, self.states[-1].master_gain)
+        engine.close()
+
+    def test_an_out_of_range_master_gain_is_clamped(self):
+        engine = self.make_engine()
+
+        engine.set_master_gain(4.0)
+        engine.seek(0)
+        self.wait_until(lambda: self.states and self.states[-1].master_gain == 1.0)
+
+        self.assertEqual(1.0, self.states[-1].master_gain)
+        engine.close()
+
     def test_mix_uses_shared_cursor_and_clips_summed_float32_output(self):
         def reader_factory(path):
             index = STEMS.index(Path(path).name)

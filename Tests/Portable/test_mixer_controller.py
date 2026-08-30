@@ -55,6 +55,12 @@ class FakePlayback:
     def apply(self, snapshot):
         self.commands.append(("apply", snapshot))
 
+    def set_looping(self, looping):
+        self.commands.append(("loop", looping))
+
+    def set_master_gain(self, gain):
+        self.commands.append(("master", gain))
+
     def close(self):
         self.closed = True
 
@@ -187,6 +193,84 @@ class MixerControllerTests(unittest.TestCase):
         self.assertEqual("error", self.controller.state.phase)
         self.assertIn("device disconnected", self.controller.state.detail)
         self.assertIn("Reconnect it", self.controller.state.detail)
+
+
+class TransportTests(MixerControllerTests):
+    """The bottom transport bar drives these; none of them may be decorative."""
+
+    def loaded(self):
+        self.controller.load("stems")
+        self.finish_next_load()
+        return self.engines[-1]
+
+    def test_nudging_seeks_by_seconds_using_the_session_sample_rate(self):
+        engine = self.loaded()
+        engine.emit_state(30, True)
+        self.queue.events.pop(0)()
+
+        self.assertTrue(self.controller.nudge(2.0))
+
+        self.assertIn(("seek", 50), engine.commands)
+
+    def test_nudging_clamps_at_both_ends_of_the_track(self):
+        engine = self.loaded()
+
+        self.assertTrue(self.controller.nudge(-5.0))
+        self.assertIn(("seek", 0), engine.commands)
+
+        engine.emit_state(95, True)
+        self.queue.events.pop(0)()
+        self.assertTrue(self.controller.nudge(60.0))
+        self.assertIn(("seek", 100), engine.commands)
+
+    def test_nudging_without_a_session_changes_nothing(self):
+        self.assertFalse(self.controller.nudge(5.0))
+        self.assertEqual([], self.engines)
+
+    def test_looping_reaches_the_engine_and_is_reported_in_state(self):
+        engine = self.loaded()
+
+        self.assertTrue(self.controller.toggle_looping())
+
+        self.assertIn(("loop", True), engine.commands)
+        self.assertTrue(self.controller.state.looping)
+
+        self.assertTrue(self.controller.toggle_looping())
+        self.assertIn(("loop", False), engine.commands)
+        self.assertFalse(self.controller.state.looping)
+
+    def test_a_playback_update_does_not_forget_that_looping_is_on(self):
+        engine = self.loaded()
+        self.controller.set_looping(True)
+
+        engine.emit_state(40, True)
+        self.queue.events.pop(0)()
+
+        self.assertTrue(self.controller.state.looping)
+
+    def test_the_master_volume_reaches_the_engine_as_a_gain(self):
+        engine = self.loaded()
+
+        self.assertTrue(self.controller.set_master_percent(40))
+
+        self.assertIn(("master", 0.4), engine.commands)
+        self.assertEqual(40, self.controller.state.master_percent)
+
+    def test_an_out_of_range_master_volume_is_clamped_not_refused(self):
+        engine = self.loaded()
+
+        self.assertTrue(self.controller.set_master_percent(180))
+        self.assertTrue(self.controller.set_master_percent(-20))
+
+        self.assertIn(("master", 1.0), engine.commands)
+        self.assertIn(("master", 0.0), engine.commands)
+        self.assertEqual(0, self.controller.state.master_percent)
+
+    def test_transport_commands_are_refused_without_a_session(self):
+        self.assertFalse(self.controller.set_looping(True))
+        self.assertFalse(self.controller.set_master_percent(50))
+        self.assertFalse(self.controller.set_looping("yes"))
+        self.assertFalse(self.controller.set_master_percent("loud"))
 
 
 class LoadTitleTests(unittest.TestCase):

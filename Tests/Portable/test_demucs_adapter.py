@@ -27,6 +27,7 @@ from SeparationWorker.engine.stem_profile import (
     LEGACY_PROFILE,
     MANIFEST_NAME,
     METAL_PROFILE,
+    METAL_STEREO_PROFILE,
     parse_manifest,
 )
 
@@ -648,6 +649,131 @@ class ProfileResultReuseTests(unittest.TestCase):
             self.assertEqual(
                 set(LEGACY_PROFILE.file_names), {path.name for path in output.iterdir()}
             )
+
+
+def mono_tone(frequency, amplitude=0.4, seconds=0.25):
+    frames = int(SAMPLE_RATE * seconds)
+    time = np.arange(frames, dtype=np.float32) / SAMPLE_RATE
+    return (amplitude * np.sin(2.0 * np.pi * frequency * time)).astype(np.float32)
+
+
+def panned(left, right):
+    return np.stack([left, right], axis=1).astype(np.float32)
+
+
+class MetalStereoSeparationTests(unittest.TestCase):
+    """The deterministic split runs through the same gates as a specialist."""
+
+    def setUp(self):
+        self.solo = mono_tone(880.0, amplitude=0.4)
+        self.rhythm = mono_tone(110.0, amplitude=0.5)
+        # Conventional metal placement: solo centred, rhythm doubled hard.
+        self.guitar = panned(self.solo + self.rhythm, self.solo - self.rhythm)
+        self.piano = tone(330.0, amplitude=0.2)
+        self.other = tone(220.0, amplitude=0.1)
+        self.sources = {
+            "vocals": tone(440.0),
+            "drums": tone(150.0),
+            "bass": tone(80.0),
+            "guitar": self.guitar,
+            "piano": self.piano,
+            "other": self.other,
+        }
+
+    def make_paths(self, root):
+        audio_file = Path(root) / "song.mp3"
+        audio_file.write_bytes(b"audio")
+        return audio_file, Path(root) / "cache" / "stereo-result"
+
+    def separate(self, audio_file, output, **overrides):
+        settings = {
+            "profile": METAL_STEREO_PROFILE,
+            "runner": FakeMetalDemucs(self.sources),
+            "cuda_probe": lambda: False,
+        }
+        settings.update(overrides)
+        return separate_audio(audio_file, output, **settings)
+
+    def test_it_runs_without_a_specialist_or_calibrated_thresholds(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            result = self.separate(audio_file, output)
+
+            published = {path.name for path in result.iterdir()}
+            self.assertEqual(set(METAL_STEREO_PROFILE.file_names) | {MANIFEST_NAME}, published)
+
+    def test_the_centred_solo_and_panned_rhythm_land_in_their_own_lanes(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            result = self.separate(audio_file, output)
+
+            center, _rate = sf.read(str(result / "guitar_center.wav"), dtype="float32", always_2d=True)
+            sides, _rate = sf.read(str(result / "guitar_sides.wav"), dtype="float32", always_2d=True)
+            np.testing.assert_allclose(panned(self.solo, self.solo), center, atol=1e-5)
+            np.testing.assert_allclose(panned(self.rhythm, -self.rhythm), sides, atol=1e-5)
+
+    def test_the_parts_reconstruct_the_isolated_guitar(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            result = self.separate(audio_file, output)
+
+            center, _r = sf.read(str(result / "guitar_center.wav"), dtype="float32", always_2d=True)
+            sides, _r = sf.read(str(result / "guitar_sides.wav"), dtype="float32", always_2d=True)
+            np.testing.assert_allclose(self.guitar, center + sides, atol=1e-5)
+
+    def test_a_fully_centred_guitar_declares_the_sides_absent(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            centred = dict(self.sources, guitar=panned(self.solo, self.solo))
+
+            result = self.separate(audio_file, output, runner=FakeMetalDemucs(centred))
+
+            manifest = parse_manifest((result / MANIFEST_NAME).read_bytes())
+            self.assertEqual(("guitar_sides",), manifest.absent_lane_ids)
+            self.assertTrue((result / "guitar_sides.wav").is_file())
+
+    def test_the_residual_still_folds_piano_and_primary_other(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            result = self.separate(audio_file, output)
+
+            published, _rate = sf.read(str(result / "other.wav"), dtype="float32", always_2d=True)
+            np.testing.assert_allclose(self.piano + self.other, published, atol=1e-6)
+
+    def test_an_unregistered_splitter_publishes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            profile = replace(METAL_STEREO_PROFILE, splitter_id="center-sides-v99")
+
+            with self.assertRaises(DemucsSeparationError) as caught:
+                self.separate(audio_file, output, profile=profile)
+
+            self.assertEqual("profile.splitter_unregistered", caught.exception.code)
+            self.assertFalse(output.exists())
+
+    def test_a_stereo_result_is_never_reused_for_the_role_profile(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            self.separate(audio_file, output)
+
+            with self.assertRaises(PublicationError) as caught:
+                separate_audio(
+                    audio_file,
+                    output,
+                    profile=admitted_metal(),
+                    runner=FakeMetalDemucs(self.sources),
+                    cuda_probe=lambda: False,
+                    specialist=specialist_writing(
+                        panned(self.solo, self.solo), panned(self.rhythm, -self.rhythm)
+                    ),
+                    thresholds=calibrated_thresholds(),
+                )
+
+            self.assertEqual("publication.reconciliation_required", caught.exception.code)
 
 
 if __name__ == "__main__":
