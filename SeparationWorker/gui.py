@@ -1027,7 +1027,7 @@ class StemslayerApp:
             self.controller.set_input_file(selected)
 
     def _pick_stems_folder(self) -> None:
-        selected = filedialog.askdirectory(parent=self.root, title="Choose a folder with four WAV stems")
+        selected = filedialog.askdirectory(parent=self.root, title="Choose a folder with published WAV stems")
         if selected:
             self._open_mixer_folder(selected, title=Path(selected).name)
 

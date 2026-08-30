@@ -34,7 +34,7 @@ For contributors who want to run from source:
    ```
 
 4. Drag an audio file onto the Split view, or select **Browse file**.
-5. Select **Separate into 4 stems**. Stemslayer opens the mixer when the four WAV files are ready.
+5. Select **Separate into 4 stems**. The button names the count the selected profile publishes, and Stemslayer opens the mixer when those WAV files are ready.
 6. Select **Export** to copy any finished stems to a folder you choose.
 
 The source GUI stores working stems in an app-managed temporary cache. You do not need to choose an output folder before separation.
@@ -55,8 +55,21 @@ A profile is the layout one separation publishes: which lanes exist, in which or
 
 | Profile | Lanes | Status |
 | --- | --- | --- |
-| Legacy | vocals, drums, bass, other | Available. This is the default and the only profile that can run. |
+| Legacy | vocals, drums, bass, other | Available. This is the default. |
+| Metal Stereo | vocals, drums, bass, guitar center, guitar sides, other | Available. Splits the isolated guitar by stereo position. |
 | Metal | vocals, drums, bass, lead guitar, rhythm guitar, other | **Not available.** |
+
+### Metal Stereo
+
+Metal Stereo isolates the guitar with `htdemucs_6s`, then splits that one stem into the part that sits in the centre of the stereo image and the part that is panned to the sides. Selecting it downloads a second set of model weights the first time, because `htdemucs_6s` is not the model the Legacy profile uses.
+
+**It reads stereo position, not musical role.** Conventional metal production doubles the rhythm guitars and pans them wide while solos and melodies sit centred, so position happens to correlate with role often enough to be useful: muting `Guitar Sides` usually leaves the solo audible. That correlation is the whole benefit, and it is not a guarantee. A centred rhythm part lands in the centre lane, a wide harmonised lead lands in the sides lane, and nothing in this profile can tell the difference. Anything else centred in the mix that survives into the guitar stem lands in the centre lane too.
+
+This is why the lanes are named for the position they describe and never for a role. Metal Stereo is not, and must not be presented as, lead and rhythm separation.
+
+The split itself is exact: centre plus sides reconstructs the isolated guitar, and there are no weights to admit and no licence to satisfy, which is why it can ship enabled while the Metal profile below cannot.
+
+### Metal
 
 **Metal cannot separate lead from rhythm guitar today, and this release does not do it.** The profile exists so the surrounding infrastructure is in place, and it is shown in the app as unavailable with the reason, rather than hidden.
 
@@ -76,14 +89,17 @@ Lead guitar is intermittent by nature: many metal tracks have no solo at all. A 
 
 | Control | Behavior |
 | --- | --- |
-| Play / Pause | Starts or pauses all four stems on one shared timeline. |
-| Timeline | Click or drag to preview and seek to a frame. |
+| Play / Pause | Starts or pauses every published stem on one shared timeline. |
+| Skip back / forward | Seeks 10 seconds against the current position, clamped to the track. |
+| Loop | Restarts the track at the end instead of stopping, without reopening the output device. |
+| Timeline | Click or drag to preview and seek to a frame. The playhead crosses every lane as one line. |
+| Master volume | Attenuates the finished mix. It rides in front of the output clip, so it cannot lift a hot lane sum back over full scale. |
 | Volume | Attenuates one stem from 100% to 0%; positive boost is not exposed. |
 | M | Mutes the selected stem. Mute takes priority over Solo. |
 | S | Solos a stem; multiple stems can be soloed together. |
 | Export | Copies the selected stems to a destination folder. |
 
-You can also select **Load stems folder** to open an existing folder containing all four required WAV files. Playback uses one Windows audio stream and four synchronized readers so the stems cannot drift apart. Waveform peak envelopes are calculated in the background and bounded to 2,000 bins to keep long songs responsive.
+You can also select **Load stems folder** to open an existing folder containing the WAV files of a published result. Playback uses one Windows audio stream and one synchronized reader per published lane so the stems cannot drift apart. Waveform peak envelopes are calculated in the background and bounded to 2,000 bins to keep long songs responsive.
 
 ## Architecture
 
@@ -101,6 +117,7 @@ SeparationWorker/
     |-- role_metrics.py       # Absence, audibility, and reconstruction limits
     |-- stem_cache.py         # App-managed temporary stem workspace
     |-- stem_session.py       # Published-layout validation and waveform peaks
+    |-- stereo_split.py       # Deterministic centre/sides split of one stem
     |-- playback.py           # Shared-cursor Windows playback
     `-- mixer.py              # Immutable gain, Mute, and Solo semantics
 
@@ -150,13 +167,13 @@ Run the portable suite with the project environment:
 .\.venv\Scripts\python.exe -m compileall -q SeparationWorker Tests\Portable
 ```
 
-The portable tests cover publication safety, Demucs diagnostics and command selection, cache lifecycle and pipeline namespacing, profile and manifest contracts, published-layout metadata validation, role reconstruction and absence, synchronized playback with fake devices, controller threading, drag-and-drop payload parsing, and headless mixer view state.
+The portable tests cover publication safety, Demucs diagnostics and command selection, cache lifecycle and pipeline namespacing, profile and manifest contracts, published-layout metadata validation, role reconstruction and absence, synchronized playback with fake devices, controller threading, drag-and-drop payload parsing, deterministic stereo-position splitting, looping and master gain, headless mixer view state, and real-widget lane rendering that measures every control stays reachable.
 
 The admission suite asserts that the shipped build denies Metal. It is expected to report `DENIED`; that is the correct result while no specialist is admitted.
 
 ## MVP boundaries
 
-This release intentionally excludes macOS support, panning, mixed-WAV export, looping, waveform zoom, output-device selection, and persisted mixer settings. It does **not** separate lead from rhythm guitar: the Metal profile ships disabled and no model is admitted. Demucs uses `htdemucs`. The CUDA portable automatically uses NVIDIA acceleration when available and retries once on CPU if CUDA inference fails; the CPU portable always uses CPU inference.
+This release intentionally excludes macOS support, panning, mixed-WAV export, waveform zoom, output-device selection, and persisted mixer settings. It does **not** separate lead from rhythm guitar: the Metal profile ships disabled and no model is admitted, and Metal Stereo splits by stereo position rather than by role. Demucs uses `htdemucs` for the Legacy profile and `htdemucs_6s` for Metal Stereo. The CUDA portable automatically uses NVIDIA acceleration when available and retries once on CPU if CUDA inference fails; the CPU portable always uses CPU inference.
 
 Every claim here is verified on Windows only. No macOS, commercial-use, or multi-player claim is made or implied.
 
