@@ -770,6 +770,29 @@ class StemslayerApp:
             row.pack(fill="x", pady=(0, 8))
             body = ctk.CTkFrame(row, fg_color="transparent")
             body.pack(fill="x", padx=14, pady=12)
+            # Pack the interactive controls before the descriptive text so the
+            # fixed-width row-management labels below (title/artist/detail),
+            # which can request more space than a real row has, are what gets
+            # squeezed by Tk's packer on overflow — never Open/Retry/Remove.
+            ctk.CTkButton(
+                body, text="Remove", width=62, height=28, command=lambda track_id=record.track_id: self._remove_library_track(track_id),
+                fg_color="transparent", hover_color=COLORS["field"], text_color=COLORS["muted"],
+                state="disabled" if record.status in {"preparing", "processing"} else "normal",
+            ).pack(side="right", padx=(6, 0))
+            if record.status == "ready":
+                ctk.CTkButton(
+                    body, text="Open", width=58, height=28, command=lambda track_id=record.track_id: self._open_library_track(track_id),
+                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
+                ).pack(side="right", padx=(6, 0))
+            elif record.status in {"failed", "interrupted", "unavailable"}:
+                ctk.CTkButton(
+                    body, text="Retry", width=58, height=28, command=lambda track_id=record.track_id: self.library_controller.retry(track_id),
+                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
+                ).pack(side="right", padx=(6, 0))
+            color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
+            ctk.CTkLabel(
+                body, text=record.status.upper(), text_color=color, font=("Segoe UI", 9, "bold"), width=78,
+            ).pack(side="right", padx=(6, 0))
             title = ctk.CTkLabel(
                 body, text=record.title, text_color=COLORS["text"],
                 font=("Segoe UI", 12, "bold"), anchor="w", width=210,
@@ -788,26 +811,7 @@ class StemslayerApp:
             ctk.CTkLabel(
                 body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 9),
                 anchor="w", width=235,
-            ).pack(side="left", padx=(8, 0))
-            color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
-            ctk.CTkLabel(
-                body, text=record.status.upper(), text_color=color, font=("Segoe UI", 9, "bold"), width=78,
-            ).pack(side="left", padx=(6, 0))
-            if record.status == "ready":
-                ctk.CTkButton(
-                    body, text="Open", width=58, height=28, command=lambda track_id=record.track_id: self._open_library_track(track_id),
-                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
-                ).pack(side="left", padx=(6, 0))
-            elif record.status in {"failed", "interrupted", "unavailable"}:
-                ctk.CTkButton(
-                    body, text="Retry", width=58, height=28, command=lambda track_id=record.track_id: self.library_controller.retry(track_id),
-                    fg_color=COLORS["field"], hover_color=COLORS["line"], text_color=COLORS["text"],
-                ).pack(side="left", padx=(6, 0))
-            ctk.CTkButton(
-                body, text="Remove", width=62, height=28, command=lambda track_id=record.track_id: self._remove_library_track(track_id),
-                fg_color="transparent", hover_color=COLORS["field"], text_color=COLORS["muted"],
-                state="disabled" if record.status in {"preparing", "processing"} else "normal",
-            ).pack(side="right", padx=(6, 0))
+            ).pack(side="left", padx=(8, 0), fill="x", expand=True)
             if record.error_detail:
                 ctk.CTkLabel(
                     row, text=record.error_detail, text_color=COLORS["muted"], font=("Segoe UI", 9),
