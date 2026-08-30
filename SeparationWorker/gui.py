@@ -208,6 +208,18 @@ def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
         canvas.create_rectangle(size * 0.28, lid_y, size * 0.72, size * 0.86, outline=color, width=2, tags="icon")
         canvas.create_line(size * 0.42, size * 0.42, size * 0.42, size * 0.74, fill=color, width=1.6, tags="icon")
         canvas.create_line(size * 0.58, size * 0.42, size * 0.58, size * 0.74, fill=color, width=1.6, tags="icon")
+    elif kind == "sliders":
+        knob_x = {0.3: 0.62, 0.5: 0.38, 0.7: 0.5}
+        for y in (0.3, 0.5, 0.7):
+            canvas.create_line(size * 0.16, size * y, size * 0.84, size * y, fill=color, width=2, tags="icon")
+        for y, x in knob_x.items():
+            canvas.create_oval(size * x - 3, size * y - 3, size * x + 3, size * y + 3, fill=color, outline="", tags="icon")
+    elif kind == "search":
+        canvas.create_oval(size * 0.14, size * 0.14, size * 0.62, size * 0.62, outline=color, width=2, tags="icon")
+        canvas.create_line(size * 0.58, size * 0.58, size * 0.86, size * 0.86, fill=color, width=2, tags="icon")
+    elif kind == "plus":
+        canvas.create_line(size * 0.5, size * 0.18, size * 0.5, size * 0.82, fill=color, width=2.4, tags="icon")
+        canvas.create_line(size * 0.18, size * 0.5, size * 0.82, size * 0.5, fill=color, width=2.4, tags="icon")
     elif kind in {"rewind", "forward"}:
         # One glyph drawn in both directions, so the pair always reads as a
         # matched set instead of two hand-tuned triangles that drift apart.
@@ -731,39 +743,72 @@ class StemslayerApp:
         copy.pack(side="left")
         ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=("Segoe UI", 22, "bold"), anchor="w").pack(fill="x")
         ctk.CTkLabel(copy, text="Stored locally. Open ready stems without separating again.", text_color=COLORS["muted"], font=("Segoe UI", 11), anchor="w").pack(fill="x", pady=(4, 0))
-        ctk.CTkButton(
-            header, text="Add song", command=self._pick_input, width=100, height=36,
-            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-            text_color=COLORS["accent_text"], font=("Segoe UI", 11, "bold"),
-        ).pack(side="right")
+        add_song = ctk.CTkFrame(header, fg_color=COLORS["accent"], corner_radius=8, height=36)
+        add_song.pack_propagate(False)
+        add_song.pack(side="right")
+        add_song_inner = ctk.CTkFrame(add_song, fg_color="transparent")
+        add_song_inner.pack(expand=True, padx=16)
+        add_song_icon = _icon(add_song_inner, "plus", 14, COLORS["accent_text"], COLORS["accent"])
+        add_song_icon.pack(side="left", padx=(0, 6))
+        add_song_label = ctk.CTkLabel(
+            add_song_inner, text="Add song", text_color=COLORS["accent_text"], font=("Segoe UI", 11, "bold"),
+        )
+        add_song_label.pack(side="left")
+        for widget in (add_song, add_song_inner, add_song_icon, add_song_label):
+            widget.bind("<Button-1>", lambda _event: self._pick_input())
+            widget.configure(cursor="hand2")
 
         # A transparent toolbar directly on the window background, not a
         # bordered "surface" box -- the boxed controls plus boxed panel read
         # as visually loud with a real catalogue on screen.
         controls = ctk.CTkFrame(panel, fg_color="transparent")
         controls.pack(fill="x", pady=(0, 8))
+        search_box = ctk.CTkFrame(controls, fg_color="transparent")
+        search_box.pack(side="left")
+        search_row = ctk.CTkFrame(search_box, fg_color="transparent")
+        search_row.pack(fill="x")
+        _icon(search_row, "search", 16, COLORS["muted2"], COLORS["window"]).pack(side="left", padx=(0, 6))
         self.library_search = ctk.CTkEntry(
-            controls, placeholder_text="Search title or artist", width=260, height=30,
-            fg_color=COLORS["window"], border_width=1, border_color=COLORS["line"], text_color=COLORS["text"],
+            search_row, placeholder_text="Search title or artist", width=220, height=28,
+            fg_color=COLORS["window"], border_width=0, text_color=COLORS["text"],
         )
         self.library_search.pack(side="left")
         self.library_search.bind("<KeyRelease>", lambda _event: self._library_query())
+        ctk.CTkFrame(search_box, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", pady=(4, 0))
+
+        # "All profiles"/"All statuses" live behind one filter icon instead of
+        # two permanently-boxed dropdowns -- a real catalogue already has the
+        # search box, the sort control, and every row's own actions competing
+        # for attention, so a rarely-touched filter pair stays collapsed.
+        self._library_filters_open = False
+        filter_button = self._flat_button(controls, "sliders", self._toggle_library_filters, diameter=32, icon_size=18)
+        self._library_filter_button = filter_button
+        filter_button.frame.pack(side="left", padx=(14, 0))
+
+        popover = ctk.CTkFrame(
+            panel, fg_color=COLORS["surface"], border_width=1, border_color=COLORS["line"], corner_radius=8,
+        )
+        self._library_filter_popover = popover
+        popover_inner = ctk.CTkFrame(popover, fg_color="transparent")
+        popover_inner.pack(padx=12, pady=12)
         profiles = ["All profiles"] + [profile.display_name for profile in SeparationController.available_profiles()]
         self.library_profile_filter = ctk.CTkOptionMenu(
-            controls, values=profiles, command=lambda _value: self._library_query(), width=140, height=30,
+            popover_inner, values=profiles, command=lambda _value: self._library_query(), width=160, height=30,
             fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
         )
-        self.library_profile_filter.pack(side="left", padx=(10, 0))
+        self.library_profile_filter.pack(pady=(0, 8))
         self.library_status_filter = ctk.CTkOptionMenu(
-            controls,
+            popover_inner,
             values=["All statuses", "Ready", "Processing", "Failed", "Interrupted", "Unavailable"],
-            command=lambda _value: self._library_query(), width=120, height=30,
+            command=lambda _value: self._library_query(), width=160, height=30,
             fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
         )
-        self.library_status_filter.pack(side="left", padx=(8, 0))
+        self.library_status_filter.pack()
+
         self.library_sort = ctk.CTkOptionMenu(
-            controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(), width=100, height=30,
-            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
+            controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(),
+            width=100, height=30, fg_color=COLORS["window"], button_color=COLORS["window"],
+            button_hover_color=COLORS["field"], text_color=COLORS["muted"], dropdown_fg_color=COLORS["surface"],
         )
         self.library_sort.pack(side="right")
 
@@ -773,6 +818,17 @@ class StemslayerApp:
             panel, fg_color=COLORS["window"], corner_radius=0, height=560
         )
         self.library_rows.pack(fill="both", expand=True)
+
+    def _toggle_library_filters(self) -> None:
+        self._library_filters_open = not self._library_filters_open
+        if self._library_filters_open:
+            self._library_filter_popover.place(
+                in_=self._library_filter_button.frame, relx=0, rely=1.0, y=6, anchor="nw",
+            )
+            self._library_filter_popover.lift()
+        else:
+            self._library_filter_popover.place_forget()
+        self._library_filter_button.set_active(self._library_filters_open)
 
     def _library_query(self) -> None:
         if not hasattr(self, "library_controller"):
@@ -843,7 +899,10 @@ class StemslayerApp:
                 retry_button.frame.library_button = retry_button
                 retry_button.frame.pack(side="right", padx=(8, 0))
             color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
-            dot = ctk.CTkFrame(body, width=8, height=8, corner_radius=4, fg_color=color)
+            # 10px, not 8: customtkinter's anti-aliased corner rounding reads
+            # as a squared-off blob at very small sizes, and a size equal to
+            # its own corner_radius*2 is what actually renders as a full circle.
+            dot = ctk.CTkFrame(body, width=10, height=10, corner_radius=5, fg_color=color)
             dot.pack_propagate(False)
             dot.pack(side="left", padx=(2, 10))
             title = ctk.CTkLabel(
