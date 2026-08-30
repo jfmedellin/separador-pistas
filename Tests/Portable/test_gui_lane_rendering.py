@@ -271,14 +271,21 @@ class LaneRenderingTests(GuiAppFixture, unittest.TestCase):
         self.assertTrue(requested, "the mixer never sized itself for the new layout")
         return int(requested[-1].split("x")[1])
 
-    def test_the_mixer_window_grows_with_the_lane_count(self):
+    def test_the_mixer_window_asks_for_the_height_each_lane_count_needs(self):
+        """Assert the request, not that six lanes simply ask for more than four.
+
+        A short screen caps both counts at the same height, which is the
+        correct behaviour because the strip scrolls from there. Demanding a
+        bare increase fails on any machine whose screen is the constraint.
+        """
         self.app._show_view("mixer")
+        available = self.root.winfo_screenheight() - SCREEN_MARGIN
+        chrome = self.app.mixer_chrome_height()
 
-        four = self.height_requested_for(STEM_NAMES)
-        six = self.height_requested_for(METAL_LANES)
-
-        self.assertEqual(six - four, mixer_view_height(6) - mixer_view_height(4))
-        self.assertGreater(six, four)
+        for lane_count, lane_names in ((4, STEM_NAMES), (6, METAL_LANES)):
+            with self.subTest(lanes=lane_count):
+                wanted = mixer_view_height(lane_count, chrome) + NAV_HEIGHT + 1
+                self.assertEqual(min(wanted, available), self.height_requested_for(lane_names))
 
     def test_the_mixer_title_reports_the_loaded_lane_count(self):
         self.app._render_mixer_state(self.state_for(METAL_LANES))
@@ -357,6 +364,27 @@ class LaneRenderingTests(GuiAppFixture, unittest.TestCase):
 
         self.assertLess(mute_column, solo_column)
         self.assertLess(solo_column, int(label.grid_info()["column"]))
+
+    def test_a_short_screen_caps_the_window_instead_of_overflowing_it(self):
+        """Cover the capped path on machines whose screen never caps.
+
+        A build runner's screen is shorter than six lanes need, so it takes
+        the branch a roomy desktop never reaches. That difference stayed
+        invisible until it failed a release build; simulating the short
+        screen keeps it covered everywhere.
+        """
+        short = 768
+        self.app._show_view("mixer")
+        # An instance attribute shadows the bound Tk method for this widget
+        # only, so no other test sees a fake screen.
+        self.root.winfo_screenheight = lambda: short
+        self.addCleanup(self.root.__dict__.pop, "winfo_screenheight", None)
+        chrome = self.app.mixer_chrome_height()
+
+        requested = self.height_requested_for(METAL_LANES)
+
+        self.assertGreater(mixer_view_height(6, chrome) + NAV_HEIGHT + 1, short - SCREEN_MARGIN)
+        self.assertEqual(short - SCREEN_MARGIN, requested)
 
     def test_the_window_is_tall_enough_that_no_lane_needs_scrolling(self):
         """The strip scrolls when it does not fit, so a short window hides lanes.

@@ -142,7 +142,7 @@ class ProfileResultSessionTests(unittest.TestCase):
         self.assertEqual(6, len(session.paths))
         self.assertEqual(profile.profile_id, session.profile_id)
         self.assertEqual(
-            tuple(self.folder / name for name in manifest.file_names), session.paths
+            tuple((self.folder / name).resolve() for name in manifest.file_names), session.paths
         )
 
     def test_absent_lanes_are_recorded_and_still_loaded(self):
@@ -156,7 +156,7 @@ class ProfileResultSessionTests(unittest.TestCase):
         self.assertTrue(session.is_absent("lead_guitar.wav"))
         self.assertTrue(session.is_absent("lead_guitar"))
         self.assertFalse(session.is_absent("rhythm_guitar.wav"))
-        self.assertIn(self.folder / "lead_guitar.wav", session.paths)
+        self.assertIn((self.folder / "lead_guitar.wav").resolve(), session.paths)
 
     def test_peak_envelopes_resolve_by_published_lane_name(self):
         self.write_result(admitted_metal())
