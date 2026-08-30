@@ -2,11 +2,14 @@
 
 These tests build an actual Tk window and click the real Open/Remove
 buttons the way a user would, rather than calling the controller methods
-directly. A row's fixed-width text columns (title/artist/detail/status)
-can request more horizontal space than the row actually has; before the
-fix in _render_library, Tk's packer sacrificed whichever widgets were
-packed last -- Open and Remove -- squeezing them to a sliver no real
-click could land on. They skip themselves when no display is available.
+directly. A row's fixed-width text columns (title/artist/detail) can
+request more horizontal space than the row actually has; before the fix
+in _render_library, Tk's packer sacrificed whichever widgets were packed
+last -- the action buttons -- squeezing them to a sliver no real click
+could land on. The actions are icon-only circular buttons (_RoundButton),
+tagged on their frame with a `library_action` marker so a test can find
+"the Open button" or "the Remove button" without relying on button text.
+They skip themselves when no display is available.
 """
 
 import os
@@ -138,13 +141,16 @@ class LibraryRowFixture(unittest.TestCase):
         return rows[0].winfo_children()[0]  # the row's `body` frame
 
     @staticmethod
-    def find_button(body, text):
+    def find_action_button(body, action):
+        """Find a row's action button by its `library_action` marker (open/retry/remove).
+
+        The action buttons are `_RoundButton` wrappers, not plain widgets with
+        a `text` option, so they can't be found by `cget("text")`; instead the
+        frame `_render_library` packs is tagged with the wrapper it belongs to.
+        """
         for child in body.winfo_children():
-            try:
-                if child.cget("text") == text:
-                    return child
-            except Exception:
-                continue
+            if getattr(child, "library_action", None) == action:
+                return child.library_button
         return None
 
     def pump_until(self, predicate, *, timeout=5.0):
@@ -160,33 +166,33 @@ class LibraryRowFixture(unittest.TestCase):
 class ReadyRowOpenTests(LibraryRowFixture):
     def test_open_button_has_real_clickable_width_next_to_a_long_title(self):
         # Regression: with realistic title/artist text, the fixed-width text
-        # columns alone (210+145+235+78 px) already exceed the row's actual
-        # body width, so before the fix Tk squeezed Open/Remove to ~1px.
+        # columns alone (210+145+235 px) already exceed the row's actual body
+        # width, so before the fix Tk squeezed the action buttons to ~1px.
         self.make_ready_track(
             title="Bohemian Rhapsody (Remastered 2011 Extended Mix)",
             artist="Queen featuring The Muppets Orchestra & Chorus",
         )
         body = self.render_and_find_row()
 
-        open_button = self.find_button(body, "Open")
-        remove_button = self.find_button(body, "Remove")
+        open_button = self.find_action_button(body, "open")
+        remove_button = self.find_action_button(body, "remove")
 
         self.assertIsNotNone(open_button)
         self.assertIsNotNone(remove_button)
-        self.assertTrue(open_button.winfo_ismapped())
-        self.assertTrue(remove_button.winfo_ismapped())
-        self.assertGreaterEqual(open_button.winfo_width(), 58)
-        self.assertGreaterEqual(remove_button.winfo_width(), 62)
+        self.assertTrue(open_button.frame.winfo_ismapped())
+        self.assertTrue(remove_button.frame.winfo_ismapped())
+        self.assertGreaterEqual(open_button.frame.winfo_width(), 32)
+        self.assertGreaterEqual(remove_button.frame.winfo_width(), 32)
         self.assertLessEqual(
-            open_button.winfo_rootx() + open_button.winfo_width(),
-            remove_button.winfo_rootx(),
+            open_button.frame.winfo_rootx() + open_button.frame.winfo_width(),
+            remove_button.frame.winfo_rootx(),
             "Open and Remove buttons overlap",
         )
 
     def test_clicking_open_on_a_ready_row_switches_to_mixer_with_its_stems(self):
         record = self.make_ready_track(title="Song", artist="Artist")
         body = self.render_and_find_row()
-        open_button = self.find_button(body, "Open")
+        open_button = self.find_action_button(body, "open")
 
         open_button.invoke()
         self.pump_until(lambda: self.app.mixer_controller.state.phase != "loading")
@@ -198,7 +204,7 @@ class ReadyRowOpenTests(LibraryRowFixture):
     def test_clicking_open_on_a_missing_result_marks_the_row_unavailable_without_switching_view(self):
         self.make_ready_track(title="Ghost Track", artist="Artist", corrupt_result=True)
         body = self.render_and_find_row()
-        open_button = self.find_button(body, "Open")
+        open_button = self.find_action_button(body, "open")
 
         open_button.invoke()
         self.root.update_idletasks()
@@ -214,9 +220,9 @@ class ReadyRowRemoveTests(LibraryRowFixture):
     def test_clicking_remove_on_a_ready_row_deletes_the_managed_folder_but_keeps_the_source(self):
         record = self.make_ready_track(title="Song", artist="Artist")
         body = self.render_and_find_row()
-        remove_button = self.find_button(body, "Remove")
+        remove_button = self.find_action_button(body, "remove")
 
-        self.assertEqual("normal", remove_button.cget("state"))
+        self.assertTrue(remove_button.is_enabled())
         remove_button.invoke()
         self.root.update_idletasks()
         self.root.update()
@@ -229,12 +235,12 @@ class ReadyRowRemoveTests(LibraryRowFixture):
     def test_removing_a_track_open_in_the_mixer_unloads_it_before_deleting(self):
         record = self.make_ready_track(title="Playing Now", artist="Artist")
         body = self.render_and_find_row()
-        self.find_button(body, "Open").invoke()
+        self.find_action_button(body, "open").invoke()
         self.pump_until(lambda: self.app.mixer_controller.state.phase != "loading")
         self.assertEqual(record.result_directory, self.app.mixer_controller.state.folder)
 
         body = self.render_and_find_row()
-        remove_button = self.find_button(body, "Remove")
+        remove_button = self.find_action_button(body, "remove")
         remove_button.invoke()
         self.root.update_idletasks()
         self.root.update()
@@ -249,17 +255,17 @@ class ReadyRowRemoveTests(LibraryRowFixture):
         record = self.app.history_store.create(source, LEGACY_PROFILE)
         self.app.library_controller.refresh()
         body = self.render_and_find_row()
-        remove_button = self.find_button(body, "Remove")
+        remove_button = self.find_action_button(body, "remove")
 
-        self.assertEqual("disabled", remove_button.cget("state"))
+        self.assertFalse(remove_button.is_enabled())
         self.assertFalse(self.app.history_store.remove(record.track_id))
         self.assertIsNotNone(self.app.history_store.get(record.track_id))
 
         self.app.history_store.update(record.track_id, status="processing")
         self.app.library_controller.refresh()
         body = self.render_and_find_row()
-        remove_button = self.find_button(body, "Remove")
-        self.assertEqual("disabled", remove_button.cget("state"))
+        remove_button = self.find_action_button(body, "remove")
+        self.assertFalse(remove_button.is_enabled())
 
 
 if __name__ == "__main__":
