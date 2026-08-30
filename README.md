@@ -1,6 +1,21 @@
 # Stemslayer
 
-Stemslayer is a Windows-first desktop app for separating one song into four Demucs stems—**vocals**, **drums**, **bass**, and **other**—then auditioning and exporting them from a synchronized local mixer.
+Stemslayer is a Windows-first desktop app that separates one song into stems with Demucs, then lets you audition and export them from a synchronized local mixer. Everything runs on your machine.
+
+What you get depends on the **profile** you pick:
+
+- **Legacy** (default) publishes four stems: **vocals**, **drums**, **bass**, **other**.
+- **Metal Stereo** publishes six: the same four plus the guitar split into **Guitar Center** and **Guitar Sides**.
+
+### Read this before you expect lead and rhythm guitar
+
+**Stemslayer does not separate lead guitar from rhythm guitar. No profile here does, and none claims to.**
+
+Metal Stereo splits the isolated guitar by **where it sits in the stereo image**, not by what it is playing. Metal is usually mixed with the rhythm guitars doubled and panned wide while solos sit centred, so muting `Guitar Sides` usually leaves the solo audible. That is the whole point of the profile, and it works because of how the music was mixed, not because anything recognised a solo.
+
+So it fails in exactly the ways you would expect it to. A rhythm part recorded centred lands in the centre lane. A lead harmonised wide lands in the sides lane. Anything else centred in the mix that survives into the guitar stem — and in a dense metal mix there is always some — lands in the centre lane next to the solo.
+
+The lanes are named for position for that reason. If you need real lead and rhythm lanes, see [Metal](#metal) below: that profile exists, ships disabled, and states why.
 
 ## Download the portable Windows release
 
@@ -12,9 +27,9 @@ The recommended distribution is the **Windows x64 portable ZIP** published in [G
 2. Verify the checksum if desired, then extract the ZIP to a folder you can write to.
 3. Run `Stemslayer.exe` from the extracted folder.
 
-Both portable bundles contain the GUI and their internal `StemslayerWorker.exe`; neither requires Python, Git, or a separate audio/Demucs installation. The CUDA build includes the CUDA runtime but requires a compatible NVIDIA GPU and current NVIDIA driver. The CPU build requires no NVIDIA hardware. The first separation downloads the `htdemucs` model weights. Later runs reuse the local model cache and reuse complete results for the same source when available. Internet access is required only for that first model download.
+Both portable bundles contain the GUI and their internal `StemslayerWorker.exe`; neither requires Python, Git, or a separate audio/Demucs installation. The CUDA build includes the CUDA runtime but requires a compatible NVIDIA GPU and current NVIDIA driver. The CPU build requires no NVIDIA hardware. The first separation downloads the model weights the selected profile needs: `htdemucs` for Legacy, and `htdemucs_6s` for Metal Stereo. They are different models, so choosing Metal Stereo for the first time downloads a second set. Later runs reuse the local model cache and reuse complete results for the same source when available. Internet access is required only for those first downloads.
 
-Use the CUDA build when possible: Demucs inference is substantially faster on a supported NVIDIA GPU. The tradeoff is download size—the CUDA ZIP is roughly 2 GB because it carries the NVIDIA runtime, while the CPU ZIP is roughly 210 MB. The CPU build is the compatibility option and can take several minutes per song. On machines with at least eight logical processors, the CPU worker uses two coordinated chunk workers and 10% overlap to reduce separation time without changing the four-stem model. The lower overlap is a balanced performance tradeoff and can slightly reduce quality at chunk boundaries compared with Demucs' 25% default.
+Use the CUDA build when possible: Demucs inference is substantially faster on a supported NVIDIA GPU. The tradeoff is download size—the CUDA ZIP is roughly 2 GB because it carries the NVIDIA runtime, while the CPU ZIP is roughly 210 MB. The CPU build is the compatibility option and can take several minutes per song. On machines with at least eight logical processors, the CPU worker uses two coordinated chunk workers and 10% overlap to reduce separation time without changing the model the profile selected. The lower overlap is a balanced performance tradeoff and can slightly reduce quality at chunk boundaries compared with Demucs' 25% default.
 
 ## Development setup
 
@@ -41,7 +56,7 @@ The source GUI stores working stems in an app-managed temporary cache. You do no
 
 ## Command line
 
-The source CLI accepts an explicit result directory and publishes exactly `vocals.wav`, `drums.wav`, `bass.wav`, and `other.wav`:
+The source CLI always uses the Legacy profile and accepts an explicit result directory, so it publishes exactly `vocals.wav`, `drums.wav`, `bass.wav`, and `other.wav`. It has no profile option; Metal Stereo is reached from the GUI:
 
 ```powershell
 .\.venv\Scripts\python.exe -m SeparationWorker.cli `
@@ -60,6 +75,7 @@ A profile is the layout one separation publishes: which lanes exist, in which or
 | Metal | vocals, drums, bass, lead guitar, rhythm guitar, other | **Not available.** |
 
 ### Metal Stereo
+<a id="metal-stereo"></a>
 
 Metal Stereo isolates the guitar with `htdemucs_6s`, then splits that one stem into the part that sits in the centre of the stereo image and the part that is panned to the sides. Selecting it downloads a second set of model weights the first time, because `htdemucs_6s` is not the model the Legacy profile uses.
 
@@ -70,6 +86,7 @@ This is why the lanes are named for the position they describe and never for a r
 The split itself is arithmetic, not inference: centre plus sides reconstructs the isolated guitar. It is exact in float32, and the published lanes reconstruct to about 90 dB because a result inherits the 16-bit sample format Demucs wrote, which is a quantisation floor rather than a loss in the split. There are no weights to admit and no licence to satisfy, which is why this profile can ship enabled while the Metal profile below cannot.
 
 ### Metal
+<a id="metal"></a>
 
 **Metal cannot separate lead from rhythm guitar today, and this release does not do it.** The profile exists so the surrounding infrastructure is in place, and it is shown in the app as unavailable with the reason, rather than hidden.
 
@@ -133,9 +150,31 @@ Admission and the runtime pipeline measure role decomposition with the same func
 
 The GUI never performs Demucs inference, WAV analysis, or native audio writes on the Tkinter event thread. In development, the adapter runs `python -m demucs.separate`. In the portable bundle, it launches the sibling `StemslayerWorker.exe`, which is the only process that imports and runs Demucs. Publication is atomic, so an incomplete result directory is never exposed.
 
-## Build the portable release
+## Release the portable builds
 
-The release workflow builds and publishes both Windows x64 variants when a `vX.Y.Z` tag is pushed. To build the CPU variant locally:
+**Merging to `master` publishes nothing.** The release workflow runs only when a `vX.Y.Z` tag is pushed, so a merge with no tag produces no ZIP and no Release:
+
+```yaml
+on:
+  push:
+    tags:
+      - "v*.*.*"
+```
+
+Tag `master` once the change is merged and the tests pass there:
+
+```powershell
+git checkout master
+git pull
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+The workflow then reinstalls the pinned dependencies, runs the portable suite on a Windows runner, builds the CPU and CUDA bundles, and attaches both ZIPs with their `.sha256` files to a GitHub Release. It takes roughly fifteen minutes. If the suite fails on the runner, no Release is published; the tag stays and can be deleted and re-pushed after a fix.
+
+### Build one variant locally
+
+To build the CPU variant without the workflow:
 
 ```powershell
 python -m venv .venv-portable
@@ -155,7 +194,7 @@ python -m venv .venv-portable-cuda
 .\Tools\build_portable.ps1 -Version 1.1.2 -Variant cuda -PythonPath (Resolve-Path .\.venv-portable-cuda\Scripts\python.exe)
 ```
 
-The script rejects a PyTorch runtime that does not match the requested variant, cleans `build/` and `dist/`, builds the one-folder GUI and worker, runs frozen entrypoint smoke tests, creates the variant-specific ZIP, and writes the matching `.sha256` file. Both ZIPs deliberately exclude model weights; `htdemucs` is acquired on first use.
+The script rejects a PyTorch runtime that does not match the requested variant, cleans `build/` and `dist/`, builds the one-folder GUI and worker, runs frozen entrypoint smoke tests, creates the variant-specific ZIP, and writes the matching `.sha256` file. Both ZIPs deliberately exclude model weights; `htdemucs` and `htdemucs_6s` are acquired on first use of the profile that needs them.
 
 ## Testing
 
