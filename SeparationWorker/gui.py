@@ -734,11 +734,11 @@ class StemslayerApp:
         self._build_library_view(shell)
 
     def _build_library_view(self, shell) -> None:
-        panel = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0, width=820)
+        panel = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
         self._library_panel = panel
 
         header = ctk.CTkFrame(panel, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 18))
+        header.pack(fill="x", padx=32, pady=(24, 18))
         copy = ctk.CTkFrame(header, fg_color="transparent")
         copy.pack(side="left")
         ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=("Segoe UI", 22, "bold"), anchor="w").pack(fill="x")
@@ -762,7 +762,7 @@ class StemslayerApp:
         # bordered "surface" box -- the boxed controls plus boxed panel read
         # as visually loud with a real catalogue on screen.
         controls = ctk.CTkFrame(panel, fg_color="transparent")
-        controls.pack(fill="x", pady=(0, 8))
+        controls.pack(fill="x", padx=32, pady=(0, 8))
         search_box = ctk.CTkFrame(controls, fg_color="transparent")
         search_box.pack(side="left")
         search_row = ctk.CTkFrame(search_box, fg_color="transparent")
@@ -812,12 +812,34 @@ class StemslayerApp:
         )
         self.library_sort.pack(side="right")
 
-        ctk.CTkFrame(panel, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", pady=(0, 4))
+        ctk.CTkFrame(panel, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", padx=32, pady=(0, 4))
 
         self.library_rows = ctk.CTkScrollableFrame(
-            panel, fg_color=COLORS["window"], corner_radius=0, height=560
+            panel, fg_color=COLORS["window"], corner_radius=0
         )
-        self.library_rows.pack(fill="both", expand=True)
+        self.library_rows.pack(fill="both", expand=True, padx=(32, 20), pady=(0, 20))
+        self._autohide_scrollbar(self.library_rows)
+
+    def _autohide_scrollbar(self, frame: ctk.CTkScrollableFrame) -> None:
+        """Show the scrollbar only once its content actually overflows the view.
+
+        CTkScrollableFrame always grids its scrollbar and has no built-in
+        auto-hide, so this re-wires the canvas's yscrollcommand -- the normal
+        Tk hook a scrollbar's set() already receives -- to toggle it based on
+        the (first, last) fractions Tk reports each time content or the
+        window is resized.
+        """
+        canvas = frame._parent_canvas
+        scrollbar = frame._scrollbar
+
+        def _on_scroll(first: str, last: str) -> None:
+            scrollbar.set(first, last)
+            if float(first) <= 0.0 and float(last) >= 1.0:
+                scrollbar.grid_remove()
+            else:
+                scrollbar.grid()
+
+        canvas.configure(yscrollcommand=_on_scroll)
 
     def _toggle_library_filters(self) -> None:
         self._library_filters_open = not self._library_filters_open
@@ -851,7 +873,12 @@ class StemslayerApp:
         has_catalog = bool(self.history_store.query()) if hasattr(self, "history_store") else bool(state.tracks)
         if has_catalog:
             self._separation_center.place_forget()
-            self._library_panel.place(relx=0.5, y=24, anchor="n")
+            # Fill the real window instead of floating a fixed-size box --
+            # a catalogue view should grow with the window, not leave a dead
+            # scrollable region below a handful of rows. Margins live on the
+            # panel's own children (see _build_library_view) since CTk's
+            # place() rejects fixed width/height offsets.
+            self._library_panel.place(relx=0, rely=0, relwidth=1, relheight=1)
         else:
             self._library_panel.place_forget()
             self._separation_center.place(relx=0.5, y=SEPARATION_CONTENT_TOP, anchor="n")
@@ -1598,7 +1625,7 @@ class StemslayerApp:
         else:
             self.mixer_view.grid_remove()
             self.separation_view.grid(row=0, column=0, sticky="nsew")
-            self.root.geometry(f"960x{SEPARATION_VIEW_HEIGHT + NAV_HEIGHT + 1}")
+            self.root.geometry(f"1120x{SEPARATION_VIEW_HEIGHT + NAV_HEIGHT + 1}")
             # The placed content clips instead of scrolling, so the window may
             # not be shrunk below the height that keeps the action reachable.
             self.root.minsize(800, SEPARATION_VIEW_HEIGHT + NAV_HEIGHT + 1)
