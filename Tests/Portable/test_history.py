@@ -104,6 +104,47 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertFalse(record.result_directory.exists())
         self.assertIsNone(self.store.get(record.track_id))
 
+    def test_discard_input_copy_is_idempotent_when_no_copy_exists(self):
+        appdata = Path(self.temp.name) / "appdata"
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            self.store.discard_input_copy("missing-track")  # must not raise
+
+    def test_purge_input_copies_removes_orphans_but_keeps_active_jobs(self):
+        appdata = Path(self.temp.name) / "appdata"
+        active = self.store.create("active.wav", LEGACY_PROFILE)
+        self.store.update(active.track_id, status="processing")
+        orphan_a = appdata / "inputs" / "orphan-a"
+        orphan_b = appdata / "inputs" / "orphan-b"
+        active_dir = appdata / "inputs" / active.track_id
+        for directory in (orphan_a, orphan_b, active_dir):
+            directory.mkdir(parents=True)
+            (directory / "source.wav").write_bytes(b"data")
+
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            removed = self.store.purge_input_copies()
+
+        self.assertEqual(2, removed)
+        self.assertFalse(orphan_a.exists())
+        self.assertFalse(orphan_b.exists())
+        self.assertTrue(active_dir.exists())
+
+    def test_remove_also_discards_a_lingering_input_copy(self):
+        appdata = Path(self.temp.name) / "appdata"
+        source = Path(self.temp.name) / "source.wav"
+        source.write_bytes(b"original")
+        record = self.store.create(source, LEGACY_PROFILE)
+        record = self.store.update(record.track_id, status="ready")
+        record.result_directory.mkdir()
+        (record.result_directory / "stem.wav").write_bytes(b"stem")
+        copy_dir = appdata / "inputs" / record.track_id
+        copy_dir.mkdir(parents=True)
+        (copy_dir / "source.wav").write_bytes(b"stale copy")
+
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            self.assertTrue(self.store.remove(record.track_id))
+
+        self.assertFalse(copy_dir.exists())
+
     def test_remove_refuses_a_catalog_path_outside_the_managed_root(self):
         outside = Path(self.temp.name) / "outside"
         outside.mkdir()
@@ -493,6 +534,146 @@ class SplitLibraryControllerTests(unittest.TestCase):
         unavailable = self.store.get(record.track_id)
         self.assertEqual("unavailable", unavailable.status)
         self.assertIn("Retry", unavailable.error_detail)
+
+    def test_mutating_the_source_after_add_cannot_change_the_hash_or_separation_input(self):
+        # ARC-02: the file is hashed and then mutated in the same window a
+        # real external edit could race the worker. The job's hash and
+        # separation input must both bind to the immutable copy, not to
+        # whatever `source` contains by the time `separate` runs.
+        source = self.source(content=b"original bytes")
+        digests_seen = []
+
+        def hash_and_mutate(path):
+            digest = source_sha256(path)
+            source.write_bytes(b"mutated bytes")
+            return digest
+
+        def separate(input_path, result, **_options):
+            digests_seen.append(source_sha256(input_path))
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            hash_source=hash_and_mutate,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        record = controller.add(source, LEGACY_PROFILE.profile_id)
+        self.queue.finish()
+
+        ready = self.store.get(record.track_id)
+        self.assertEqual("ready", ready.status)
+        self.assertEqual(1, len(digests_seen))
+        self.assertEqual(digests_seen[0], ready.source_hash)
+
+    def test_copy_is_created_before_hashing_and_used_for_hashing_and_separation(self):
+        source = self.source(content=b"payload")
+        appdata = Path(self.temp.name) / "appdata"
+        hashed_paths = []
+        separated_paths = []
+        separated_contents = []
+
+        def hash_source(path):
+            hashed_paths.append(Path(path))
+            return source_sha256(path)
+
+        def separate(input_path, result, **_options):
+            separated_paths.append(Path(input_path))
+            separated_contents.append(Path(input_path).read_bytes())
+            write_stems(Path(result))
+            return Path(result)
+
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            controller = SplitLibraryController(
+                self.store,
+                separate=separate,
+                metadata_reader=self.controller._metadata_reader,
+                hash_source=hash_source,
+                start_worker=self.queue.start,
+                dispatch=self.queue.dispatch,
+            )
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            expected_copy = appdata / "inputs" / record.track_id / "source.mp3"
+            self.queue.finish()
+
+        self.assertEqual([expected_copy], hashed_paths)
+        self.assertEqual([expected_copy], separated_paths)
+        self.assertEqual([b"payload"], separated_contents)
+
+    def test_input_copy_is_deleted_after_the_job_reaches_ready(self):
+        source = self.source()
+        appdata = Path(self.temp.name) / "appdata"
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = self.controller.add(source, LEGACY_PROFILE.profile_id)
+            copy_dir = appdata / "inputs" / record.track_id
+            copy_dir.mkdir(parents=True)
+            self.queue.finish()
+            ready = self.store.get(record.track_id)
+            self.assertEqual("ready", ready.status)
+            self.assertFalse(copy_dir.exists())
+
+    def test_input_copy_is_deleted_after_the_job_reaches_failed(self):
+        source = self.source()
+        appdata = Path(self.temp.name) / "appdata"
+
+        def separate(_input_path, _result, **_options):
+            raise RuntimeError("boom")
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            copy_dir = appdata / "inputs" / record.track_id
+            copy_dir.mkdir(parents=True)
+            self.queue.finish()
+            failed = self.store.get(record.track_id)
+            self.assertEqual("failed", failed.status)
+            self.assertFalse(copy_dir.exists())
+
+    def test_retry_recopies_the_input_after_deletion_and_succeeds(self):
+        source = self.source(content=b"retry me")
+        appdata = Path(self.temp.name) / "appdata"
+        attempts = []
+        staged_contents = []
+
+        def separate(input_path, result, **_options):
+            attempts.append(Path(input_path))
+            staged_contents.append(Path(input_path).read_bytes())
+            if len(attempts) == 1:
+                raise RuntimeError("first attempt fails")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            self.queue.finish()
+            self.assertEqual("failed", self.store.get(record.track_id).status)
+
+            self.assertTrue(controller.retry(record.track_id))
+            self.queue.finish()
+
+        expected_copy = appdata / "inputs" / record.track_id / "source.mp3"
+        retried = self.store.get(record.track_id)
+        self.assertEqual("ready", retried.status)
+        self.assertEqual([expected_copy, expected_copy], attempts)
+        self.assertEqual([b"retry me", b"retry me"], staged_contents)
+        self.assertTrue(source.exists())
+        self.assertFalse(expected_copy.parent.exists())
 
     def test_retry_replaces_an_invalid_managed_result_without_touching_the_source(self):
         source = self.source()

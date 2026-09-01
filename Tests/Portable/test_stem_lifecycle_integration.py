@@ -22,10 +22,11 @@ from SeparationWorker.demucs_adapter import separate_audio
 from SeparationWorker.engine import stem_cache
 from SeparationWorker.engine.pcm import PlanarPCM
 from SeparationWorker.engine.role_metrics import RoleThresholds
-from SeparationWorker.engine.stem_profile import MANIFEST_NAME, METAL_PROFILE
+from SeparationWorker.engine.stem_profile import LEGACY_PROFILE, MANIFEST_NAME, METAL_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES, StemSession
 from SeparationWorker.engine.wav import encode_float32_wav
 from SeparationWorker.gui_controller import SeparationController
+from SeparationWorker.history import HistoryStore, SplitLibraryController
 from SeparationWorker.mixer_controller import MixerController
 
 METAL_SAMPLE_RATE = 44_100
@@ -277,6 +278,68 @@ class SixLaneLifecycleTests(unittest.TestCase):
                 self.assertEqual((), controller.state.absent_lanes)
             finally:
                 controller.close()
+
+
+class Arc02InputCopyPublicationTests(unittest.TestCase):
+    """D10 regression: the ARC-02 input copy must never live under library_root.
+
+    Exercises SplitLibraryController with the real separate_audio -- and
+    therefore the real publish_atomic -- to prove the input copy staged
+    under local_data_root()/inputs never confuses publish_atomic's
+    exists-path reconciliation short-circuit for library_root/{track_id}.
+    """
+
+    def runner(self, command):
+        command = list(command)
+        model = command[command.index("--name") + 1]
+        output = Path(command[command.index("--out") + 1])
+        source = output / model / Path(command[-1]).stem
+        source.mkdir(parents=True)
+        for name in LEGACY_PROFILE.raw_outputs:
+            pcm = PlanarPCM(8_000, ((0.1, -0.1, 0.05, -0.05),))
+            (source / f"{name}.wav").write_bytes(encode_float32_wav(pcm))
+
+    def test_publish_atomic_succeeds_with_the_copy_staged_outside_library_root(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            workspace = Path(workspace)
+            library_root = workspace / "library"
+            appdata = workspace / "appdata"
+            inputs_root = appdata / "inputs"
+            source = workspace / "song.mp3"
+            source.write_bytes(b"original audio")
+
+            store = HistoryStore(workspace / "library.db", library_root)
+            staged_inputs = []
+
+            def separate(input_path, result_directory, **_options):
+                staged_inputs.append(Path(input_path))
+                return separate_audio(
+                    input_path,
+                    result_directory,
+                    profile=LEGACY_PROFILE,
+                    runner=self.runner,
+                    cuda_probe=lambda: False,
+                )
+
+            with mock.patch(
+                "SeparationWorker.history.local_data_root", return_value=appdata
+            ):
+                controller = SplitLibraryController(
+                    store,
+                    separate=separate,
+                    start_worker=lambda target: target(),
+                    dispatch=lambda callback: callback(),
+                )
+                record = controller.add(source, LEGACY_PROFILE.profile_id)
+
+            ready = store.get(record.track_id)
+            self.assertEqual("ready", ready.status)
+            self.assertTrue(ready.result_directory.is_dir())
+            self.assertEqual(library_root, ready.result_directory.parent)
+            self.assertEqual(1, len(staged_inputs))
+            self.assertTrue(staged_inputs[0].is_relative_to(inputs_root))
+            self.assertFalse(staged_inputs[0].is_relative_to(library_root))
+            self.assertFalse((inputs_root / record.track_id).exists())
 
 
 if __name__ == "__main__":

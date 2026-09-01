@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -22,6 +22,7 @@ from SeparationWorker.engine.stem_profile import LEGACY_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.gui_controller import GuiState, SeparationController
 from SeparationWorker.history import HistoryStore, LibraryState, SplitLibraryController, TrackRecord
+from SeparationWorker.instance_lock import acquire_single_instance
 from SeparationWorker.mixer_controller import MixerController, MixerState
 
 
@@ -553,6 +554,10 @@ class StemslayerApp:
         )
         self.history_store = HistoryStore()
         self.history_store.recover_unfinished()
+        # Safe only because acquire_single_instance() in main() guarantees
+        # exactly one process reaches this code (ARC-01); a second process
+        # racing this cleanup could delete another job's in-progress copy.
+        self.history_store.purge_input_copies()
         self.library_controller = SplitLibraryController(
             self.history_store,
             dispatch=self._events.put,
@@ -1939,12 +1944,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if arguments:
         raise ValueError(f"Unsupported arguments: {' '.join(arguments)}")
+    if not acquire_single_instance():
+        _report_second_instance()
+        return 1
     ctk.set_appearance_mode("dark")
     root = ctk.CTk()
     TkinterDnD.require(root)
     StemslayerApp(root)
     root.mainloop()
     return 0
+
+
+def _report_second_instance() -> None:
+    """Tell the user another instance is already running; touch no history state."""
+    message = "Stemslayer is already running. Close the other window first."
+    print(message, file=sys.stderr)
+    try:
+        dialog_root = tk.Tk()
+        dialog_root.withdraw()
+        messagebox.showerror("Stemslayer already running", message)
+        dialog_root.destroy()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

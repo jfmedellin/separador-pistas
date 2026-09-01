@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import shutil
 import sqlite3
 import threading
@@ -15,9 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
-from SeparationWorker.demucs_adapter import separate_audio
+from SeparationWorker.demucs_adapter import DemucsSeparationError, separate_audio
 from SeparationWorker.engine.stem_profile import StemProfile, resolve_profile
 from SeparationWorker.engine.stem_session import StemSession
+from SeparationWorker.paths import local_data_root
 
 
 TrackStatus = Literal[
@@ -30,13 +30,6 @@ STATUSES: tuple[TrackStatus, ...] = (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def local_data_root() -> Path:
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        return Path(base) / "Stemslayer"
-    return Path.home() / "AppData" / "Local" / "Stemslayer"
 
 
 def source_sha256(path: str | Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -448,6 +441,7 @@ class HistoryStore:
             return False
         if record.status in {"preparing", "processing"}:
             return False
+        self.discard_input_copy(track_id)
         if release is not None:
             release(record)
         try:
@@ -459,6 +453,45 @@ class HistoryStore:
             self.update(track_id, status="unavailable", error_detail=f"Could not remove stored stems: {error}")
             return False
         return self.delete_catalog_entry(track_id)
+
+    def discard_input_copy(self, track_id: str) -> None:
+        """Best-effort removal of the ARC-02 immutable input copy for `track_id`.
+
+        Called once a job reaches a terminal state (`ready`/`failed`) and
+        from `remove()`. A leftover copy is inert to an older build (see
+        Migration/Rollout), so filesystem failures here are swallowed
+        instead of surfaced as a job-affecting error.
+        """
+        directory = local_data_root() / "inputs" / track_id
+        if not directory.exists():
+            return
+        try:
+            shutil.rmtree(directory)
+        except OSError:
+            pass
+
+    def purge_input_copies(self) -> int:
+        """Remove leftover `inputs/*` directories not tied to an active job.
+
+        Meant to run once at startup, after `recover_unfinished()` has
+        already retired any `preparing`/`processing` rows to `interrupted`.
+        """
+        inputs_root = local_data_root() / "inputs"
+        if not inputs_root.exists():
+            return 0
+        active_ids = {
+            record.track_id for record in self.query() if record.status in {"preparing", "processing"}
+        }
+        removed = 0
+        for entry in inputs_root.iterdir():
+            if not entry.is_dir() or entry.name in active_ids:
+                continue
+            try:
+                shutil.rmtree(entry)
+                removed += 1
+            except OSError:
+                continue
+        return removed
 
 
 @dataclass(frozen=True)
@@ -560,10 +593,18 @@ class SplitLibraryController:
         record = self.store.get(track_id)
         if record is None:
             return
+        original_track_id = track_id
         try:
             requested_source = record.source_path
+            # Metadata (title/artist/genre/duration) is cosmetic, not part of
+            # job identity, so it is read from the original path -- reading
+            # it from the renamed copy would lose the original filename as
+            # the title fallback for untagged files. Hashing and separation
+            # below MUST use the immutable copy (source-identity-immutability
+            # spec); metadata reading is intentionally out of that scope.
             metadata = self._metadata_reader(requested_source)
-            digest = self._hash_source(requested_source)
+            staged_input = self._stage_input_copy(original_track_id, requested_source)
+            digest = self._hash_source(staged_input)
             owner = self.store.claim_identity(track_id, digest, profile.pipeline_fingerprint)
             if owner.track_id != track_id:
                 if not self.store.discard_duplicate_candidate(track_id):
@@ -591,7 +632,7 @@ class SplitLibraryController:
             )
             self._dispatch(self.refresh)
             self._discard_invalid_managed_result(record, profile)
-            result = Path(self._separate(record.source_path, record.result_directory, profile=profile))
+            result = Path(self._separate(staged_input, record.result_directory, profile=profile))
             if result.resolve() != record.result_directory.resolve():
                 raise RuntimeError("Separation published outside the managed library directory")
             session = StemSession.load(result, profile=profile)
@@ -605,7 +646,31 @@ class SplitLibraryController:
                 self.store.update(track_id, status="failed", error_detail=f"{cause} {recovery}".strip())
             self._dispatch(self.refresh)
             return
+        finally:
+            # Fires on every exit from this method once the job has a track
+            # id to clean up under -- success, failure, and the early-return
+            # duplicate-identity paths above all leave the copy orphaned
+            # otherwise (ARC-02 terminal-state cleanup).
+            self.store.discard_input_copy(original_track_id)
         self._dispatch(lambda: self._finish_success(track_id))
+
+    @staticmethod
+    def _stage_input_copy(track_id: str, source_path: str | Path) -> Path:
+        """Copy the source file into an immutable, job-owned location before hashing (ARC-02)."""
+        directory = local_data_root() / "inputs" / track_id
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        staged = directory / f"source{Path(source_path).suffix}"
+        try:
+            shutil.copyfile(source_path, staged)
+        except OSError as error:
+            raise DemucsSeparationError(
+                "input.copy_failed",
+                f"Could not stage the source file for separation: {error}.",
+                "Retry from the original audio.",
+            ) from error
+        return staged
 
     def _discard_invalid_managed_result(self, record: TrackRecord, profile: StemProfile) -> None:
         """Clear only an invalid track-owned result so a retry can publish atomically."""
