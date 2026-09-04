@@ -1,0 +1,40 @@
+change: review-phase2-job-lifecycle
+project: separador-pistas
+artifact_store: hybrid
+execution_mode: auto
+delivery_strategy: auto-chain
+review_budget_lines: 800
+source: PROJECT_REVIEW_2026-08-30.md (delivery-sequence Phase 2: ARC-03, ARC-04, dead-runtime removal)
+phases:
+  explore: done
+  proposal: done
+  spec: done
+  design: done
+  tasks: done
+  apply: phase-a-in-progress
+chain_strategy: stacked-to-main
+  verify: pending
+  archive: pending
+
+paused_at: 2026-09-03
+branch: fix/review-phase1-correctness-security (continuing on the same local branch; not pushed)
+predecessor: review-phase1-correctness-security (SEC-01/ARC-01/ARC-02, 3 commits, committed)
+resume_with: |
+  Exploration complete (persisted here and in Engram under
+  sdd/review-phase2-job-lifecycle/explore after the sdd-explore sub-agent returned content
+  but had no Write/Edit/mem_save tools available to persist it itself -- the orchestrator
+  wrote exploration.md and this state.yaml directly from the returned analysis).
+
+  Recommendation: lightweight Popen-owned JobManager for ARC-03 (bounded queue, default
+  concurrency 1, terminate->grace->kill escalation) + remove the dormant
+  SeparationWorker/runtime/ package (supervisor.py, worker_main.py, __init__.py) and
+  Tests/Portable/test_worker_runtime.py for ARC-04, rather than wiring the tested
+  Supervisor into production -- no production Process/IPC implementation exists at all
+  (only a test fake), and demucs_worker.py speaks no protocol today.
+
+  Open questions flagged for the proposal phase: concurrency-1 default vs. visible queueing,
+  what "cancel mid-inference" really means (kill the subprocess, not graceful stop),
+  whether guitar_adapter.py's parallel run_specialist path moves together with
+  demucs_adapter.py, and frozen-build process I/O verification akin to Phase 1's C.1/C.2.
+
+  To resume: run sdd-propose against this exploration.
