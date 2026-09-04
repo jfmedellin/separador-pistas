@@ -22,7 +22,7 @@ predecessor: review-phase1-correctness-security (SEC-01/ARC-01/ARC-02, 3 commits
 commits:
   - cba1a78 fix: remove dormant runtime supervisor package (ARC-04)
   - c6ff9bc fix: bounded, cancellable job lifecycle via owned subprocesses (ARC-03)
-  - (Phase C / ARC-03 surface commit pending -- about to be committed by the orchestrator)
+  - e40ba11 fix: cancel UI, queued label, and bounded close-drain (ARC-03 surface)
 resume_with: |
   All three phases implemented and independently re-verified by the orchestrator (test counts
   re-run against .venv-portable, not just trusted from sub-agent reports):
