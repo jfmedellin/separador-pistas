@@ -85,7 +85,7 @@ RED tests for `job_manager.py` (Testing Strategy table, unit rows 1–4):
 
 ## Phase C: ARC-03 surface — cancel UI, Queued label, bounded close-drain
 
-- [ ] C.1 RED: `Tests/Portable/test_gui_library_rows.py` (or a new sibling test module following
+- [x] C.1 RED: `Tests/Portable/test_gui_library_rows.py` (or a new sibling test module following
       its `StemslayerApp` + real `Tk` root fixture pattern) — a job body that blocks past the
       grace/kill window; calling `_close()` with the confirmation auto-accepted proves no
       child thread/process survives past the bounded deadline, and `root.destroy()` fires only
@@ -94,7 +94,13 @@ RED tests for `job_manager.py` (Testing Strategy table, unit rows 1–4):
       file for this scenario — Testing Strategy row 9 only names the `SplitLibraryController`-level
       test (covered by B.12). This task adds the missing GUI-level regression the design's own
       spec scenario "No child process survives close" requires.
-- [ ] C.2 GREEN: Modify `SeparationWorker/gui.py`: add a per-row Cancel action wired to
+      Implemented as two tests in `Tests/Portable/test_gui_library_rows.py`:
+      `CloseDrainTests` (real `subprocess.Popen` registered on the job handle; confirms killed
+      after `_close()`, and `root.destroy` is only called after `shutdown()` returns) and
+      `CloseConfirmationDeclinedTests` (D11: a declined confirm leaves `_closed` `False` and the
+      window/job alive). Confirmed both fail on current `master` (`askyesno` never called, 0
+      times) before C.2's implementation.
+- [x] C.2 GREEN: Modify `SeparationWorker/gui.py`: add a per-row Cancel action wired to
       `SplitLibraryController.cancel(track_id)`, gated by a confirmation dialog stating the work
       is lost and not resumable (D11); modify the library render path to show a derived "Queued"
       label over rows whose `track_id` is in `state.queued_track_ids` while status stays
@@ -102,26 +108,56 @@ RED tests for `job_manager.py` (Testing Strategy table, unit rows 1–4):
       when work is in flight (D11) before setting `self._closed = True`, then call
       `controller.shutdown(deadline=8.0)` (D10) before `root.destroy()`; a declined confirmation
       returns with `_closed` still `False`. Run C.1 to green.
-- [ ] C.3 Run full `python -m unittest discover -s Tests\Portable -v`; zero regressions.
+      Implemented: new `stop` icon glyph + per-row Cancel button (`_cancel_library_track`,
+      `messagebox.askyesno` confirm) for `preparing`/`processing` rows; a "Queued" label rendered
+      when `record.track_id in state.queued_track_ids`; new `_work_in_flight()` helper
+      (`preparing`/`processing` in `state.tracks`) gating `_close()`'s confirm; `_close()` now
+      calls `self.library_controller.shutdown(deadline=8.0)` before `root.destroy()`. C.1 is green.
+- [x] C.3 Run full `python -m unittest discover -s Tests\Portable -v`; zero regressions.
+      414/414 passed (412-test baseline + the 2 new C.1 tests), 28.3s.
 
 Apply-time verification (design's C.2) — **requires a real portable build to execute, same
 caveat Phase 1's C.1/C.2 had.** Distinct task set, not folded into C.2's RED/GREEN pair:
 
-- [ ] C.4 Apply-time verification: `StemslayerApp --self-test` (`gui.py:1929-1932`) still resolves
-      the worker and exits 0.
+- [x] C.4 Apply-time verification: `StemslayerApp --self-test` (`gui.py:1929-1932`) still resolves
+      the worker and exits 0. **Verified in dev venv** (not source-inference only): ran
+      `main(['--self-test'])` directly against `.venv-portable` — returned exit code `0`. Note:
+      this exercises only the `sys.argv == ["--self-test"]` short-circuit; the `frozen_worker_path()`
+      call inside `if getattr(sys, "frozen", False):` is unreachable without an actual PyInstaller
+      build, so the worker-executable resolution itself is unverified here. Code at this path is
+      byte-identical to Phase B's baseline (Phase C touched only `gui.py`'s library render/close
+      methods, not `main()`).
 - [ ] C.5 Apply-time verification: no console window flashes during a split — confirms
       `CREATE_NO_WINDOW` survived the `Popen` swap.
-- [ ] C.6 Apply-time verification: force a Demucs failure — the error detail still shows a
+      **Source-level confirmation only** (per apply instructions, this is Phase B's concern and
+      already unchanged): `grep -n "CREATE_NO_WINDOW"` in `demucs_adapter.py:130` and
+      `guitar_adapter.py:175` — both present, unmodified by this Phase C diff (Phase C did not
+      touch either adapter file). The actual "no visible flash" observation still needs a real
+      portable build + a live split to confirm visually — **left unchecked; needs a human on a
+      built portable EXE**.
+- [x] C.6 Apply-time verification: force a Demucs failure — the error detail still shows a
       diagnostic tail, confirming `communicate()` preserved the `stdout=PIPE, stderr=STDOUT`
       capture `subprocess.run` gave.
+      **Already covered by Phase B's B.9 regression test** —
+      `Tests/Portable/test_demucs_adapter.py::test_cuda_and_cpu_failure_reports_bounded_diagnostic_tails`,
+      re-confirmed passing in this run's full-suite pass (C.3). Not re-tested, cited per instructions.
 - [ ] C.7 Apply-time verification: cancel a CPU run started with `--jobs > 0` — Task Manager
       shows `StemslayerWorker.exe` **and every child it spawned** gone within the grace period
       (D9's actual tree-kill claim; threat-matrix row "Process integration / child-tree
       containment").
+      **CANNOT be done from a dev shell.** Requires a real portable (PyInstaller) build run with
+      `--jobs > 0`, a live cancel, and Task Manager observation of the process tree. Left
+      unchecked — needs a human to run against a built portable EXE.
 - [ ] C.8 Apply-time verification: fault-inject the Win32 job-object helper to force the fallback
       path — cancel still terminates the direct child, and close still completes within the
       deadline.
-- [ ] C.9 Ship as PR #3 (ARC-03 surface), based on PR #2.
+      **CANNOT be done from a dev shell.** Requires a real portable build with the `ctypes`
+      job-object helper fault-injected (e.g. forcing `_create_and_assign_job_object` to return
+      `None`) and an observed live cancel/close against the built EXE. Left unchecked — needs a
+      human to run against a built portable EXE.
+- [ ] C.9 Ship as PR #3 (ARC-03 surface), based on PR #2. Not shipped by this run — left for the
+      orchestrator to commit; C.7/C.8 should be scheduled before this PR is considered mergeable,
+      per the Review Workload Forecast below.
 
 ## Review Workload Forecast
 

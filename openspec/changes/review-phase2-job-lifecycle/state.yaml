@@ -3,6 +3,7 @@ project: separador-pistas
 artifact_store: hybrid
 execution_mode: auto
 delivery_strategy: auto-chain
+chain_strategy: stacked-to-main
 review_budget_lines: 800
 source: PROJECT_REVIEW_2026-08-30.md (delivery-sequence Phase 2: ARC-03, ARC-04, dead-runtime removal)
 phases:
@@ -11,32 +12,46 @@ phases:
   spec: done
   design: done
   tasks: done
-  apply: phase-a-done-phase-b-in-progress
-chain_strategy: stacked-to-main
-commits:
-  - cba1a78 fix: remove dormant runtime supervisor package (ARC-04)
+  apply: done (A+B+C all committed 2026-09-04; C.7/C.8 need a real portable build, not source-verifiable)
   verify: pending
   archive: pending
 
-paused_at: 2026-09-03
+paused_at: 2026-09-04
 branch: fix/review-phase1-correctness-security (continuing on the same local branch; not pushed)
 predecessor: review-phase1-correctness-security (SEC-01/ARC-01/ARC-02, 3 commits, committed)
+commits:
+  - cba1a78 fix: remove dormant runtime supervisor package (ARC-04)
+  - c6ff9bc fix: bounded, cancellable job lifecycle via owned subprocesses (ARC-03)
+  - (Phase C / ARC-03 surface commit pending -- about to be committed by the orchestrator)
 resume_with: |
-  Exploration complete (persisted here and in Engram under
-  sdd/review-phase2-job-lifecycle/explore after the sdd-explore sub-agent returned content
-  but had no Write/Edit/mem_save tools available to persist it itself -- the orchestrator
-  wrote exploration.md and this state.yaml directly from the returned analysis).
+  All three phases implemented and independently re-verified by the orchestrator (test counts
+  re-run against .venv-portable, not just trusted from sub-agent reports):
+    - Phase A (ARC-04): runtime/ package + its test deleted after C.1's 3-check safety gate
+      all passed clean. 394/394 tests.
+    - Phase B (ARC-03 core): SeparationWorker/job_manager.py (JobManager/JobHandle/JobCancelled/
+      run_owned/current_job, Win32 job-object tree-kill via ctypes with silent fallback).
+      Both demucs_adapter.run_demucs and guitar_adapter.run_specialist swapped to run_owned.
+      SplitLibraryController gained cancel()/shutdown()/queued_track_ids. D7's guarantee (cancel
+      raises JobCancelled, never CalledProcessError, so the CUDA->CPU fallback never re-triggers)
+      verified at two levels: an injected-runner test AND a real-subprocess-gets-killed test.
+      412/412 tests. This apply run was interrupted once by a session rate limit mid-Phase-B;
+      resumed by inspecting the working tree directly rather than restarting the sub-agent.
+    - Phase C (ARC-03 surface): per-row Cancel button + confirm dialog, derived "Queued" label
+      (no schema change), _close() confirms once then calls controller.shutdown(deadline=8.0)
+      before root.destroy(). 414/414 tests.
 
-  Recommendation: lightweight Popen-owned JobManager for ARC-03 (bounded queue, default
-  concurrency 1, terminate->grace->kill escalation) + remove the dormant
-  SeparationWorker/runtime/ package (supervisor.py, worker_main.py, __init__.py) and
-  Tests/Portable/test_worker_runtime.py for ARC-04, rather than wiring the tested
-  Supervisor into production -- no production Process/IPC implementation exists at all
-  (only a test fake), and demucs_worker.py speaks no protocol today.
+  Apply-time verification C.4 and C.6 done (C.4 actually executed --self-test in dev venv,
+  exit 0; C.6 cited from Phase B's existing diagnostic-tail regression test). C.5 is
+  source-confirmed only. **C.7 and C.8 explicitly require a real built portable EXE + Task
+  Manager observation (tree-kill of --jobs>0 children, and the Win32 job-object fallback path)
+  -- these cannot be verified from a dev shell and are left unchecked in tasks.md, not
+  fabricated.** A human must run these against a real `Tools/build_portable.ps1` build before
+  treating PR #3 as fully verified, same caveat Phase 1's C.1/C.2 had for --repo.
 
-  Open questions flagged for the proposal phase: concurrency-1 default vs. visible queueing,
-  what "cancel mid-inference" really means (kill the subprocess, not graceful stop),
-  whether guitar_adapter.py's parallel run_specialist path moves together with
-  demucs_adapter.py, and frozen-build process I/O verification akin to Phase 1's C.1/C.2.
-
-  To resume: run sdd-propose against this exploration.
+  To resume:
+    1. Run sdd-verify against the full change (spec/design/tasks vs. implementation).
+    2. Get a human to run C.7/C.8 against a real portable build.
+    3. Decide whether to push this branch (now 5 commits total across Phase 1 + Phase 2) / open
+       PRs, or keep it local.
+    4. All artifacts mirrored in Engram under sdd/review-phase2-job-lifecycle/* and in this repo
+       under openspec/changes/review-phase2-job-lifecycle/.
