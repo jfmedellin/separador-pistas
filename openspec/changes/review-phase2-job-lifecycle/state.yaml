@@ -13,7 +13,7 @@ phases:
   design: done
   tasks: done
   apply: done (A+B+C all committed 2026-09-04; C.7/C.8 need a real portable build, not source-verifiable)
-  verify: pending
+  verify: done (PASS, 0 CRITICAL, 0 blocking WARNING, after 3 passes -- 2 real bugs found and fixed, not just test gaps: 1b64057, a26d47a)
   archive: pending
 
 paused_at: 2026-09-04
