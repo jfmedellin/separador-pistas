@@ -11,7 +11,7 @@ phases:
   spec: done
   design: done
   tasks: done
-  apply: phase-c-complete (C.1-C.14 done 2026-09-03; all three phases implemented)
+  apply: done (A+B+C all committed 2026-09-03)
   verify: pending
   archive: pending
 
@@ -20,31 +20,31 @@ branch: fix/review-phase1-correctness-security (local only, not pushed)
 commits:
   - f434fc0 docs: add external project review and Phase 1 SDD plan
   - 854df88 fix: enforce single instance and immutable job input (ARC-01, ARC-02)
-  - (Phase C / SEC-01 changes are implemented on the branch but not yet committed --
-    left for the user/orchestrator to review and commit)
+  - edf0d9b fix: app-owned model manager with verified SHA-256 manifest (SEC-01)
 resume_with: |
-  Phase A (ARC-01) + Phase B (ARC-02) are committed (2 commits, single local
-  branch fix/review-phase1-correctness-security, not pushed, no PR opened yet)
-  -- the user chose one combined branch instead of the design's originally
-  suggested two-stacked-PR split.
-
-  Phase C (SEC-01, tasks C.1-C.14) is now implemented (uncommitted working tree
-  changes): SeparationWorker/model_manifest.py and model_manager.py (new),
-  demucs_adapter.py (--repo wiring + ensure_model call), history.py
-  (on_model_progress hook), gui.py (progress label wiring), Tools/stemslayer_portable.spec
-  (comment fixes), and new/updated tests. 411/411 Tests/Portable tests passing
-  (398 baseline + 13 new), re-run against both .venv and .venv-portable.
+  All three phases (ARC-01, ARC-02, SEC-01) are committed (3 commits, single
+  local branch fix/review-phase1-correctness-security, not pushed, no PR
+  opened yet) -- the user chose one combined branch instead of the design's
+  originally suggested three-stacked-PR split. 411/411 Tests/Portable tests
+  passing (398 baseline + 13 new for SEC-01), independently re-run and
+  confirmed by the orchestrator against .venv-portable.
 
   To resume:
-    1. Review the uncommitted Phase C diff and decide how to split/commit it
-       (the design originally suggested this as its own PR #3, based on PR #2).
-    2. Run sdd-verify against the full change (spec/design/tasks vs. implementation).
-    3. Documented apply-time deviations (see tasks.md's Phase C section): design's
-       `runtime/worker_main.py` reference was inexact (real file is demucs_worker.py);
-       model_manager.ensure_model() gained an extra `bundled_root` test-injection
-       parameter; separate_audio() gained `on_progress`; SplitLibraryController gained
-       `on_model_progress`; test_demucs_adapter.py needed module-level ensure_model
-       patching to avoid real network calls in ~40 pre-existing tests.
+    1. Run sdd-verify against the full change (spec/design/tasks vs.
+       implementation) before archiving.
+    2. Decide whether to push this branch / open a PR now.
+    3. Documented apply-time deviations (see tasks.md's Phase B/C sections):
+       Phase B reads metadata from the original path, not the staged copy
+       (cosmetic, spec-compliant); Phase C's design cited
+       `runtime/worker_main.py` for the frozen worker but the real file is
+       `demucs_worker.py`; model_manager.ensure_model() gained an extra
+       `bundled_root` test-injection parameter; separate_audio() gained
+       `on_progress`; SplitLibraryController gained `on_model_progress`.
     4. All artifacts (proposal, specs, design, tasks, apply-progress) are mirrored
        in Engram under topic keys `sdd/review-phase1-correctness-security/*` and
        in this repo under `openspec/changes/review-phase1-correctness-security/`.
+
+  This change (SEC-01/ARC-01/ARC-02) is "Fix first" #1-3 / delivery-sequence
+  Phase 1 of PROJECT_REVIEW_2026-08-30.md. Phase 2 (ARC-03 bounded/cancellable
+  job lifecycle + ARC-04 wire the tested-but-unused runtime/supervisor.py, or
+  remove it) is the next recommended change and has not been started.
