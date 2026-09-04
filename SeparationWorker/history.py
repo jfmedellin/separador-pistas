@@ -15,9 +15,20 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from SeparationWorker.demucs_adapter import DemucsSeparationError, separate_audio
+from SeparationWorker.engine.publication import PublicationError
 from SeparationWorker.engine.stem_profile import StemProfile, resolve_profile
 from SeparationWorker.engine.stem_session import StemSession
+from SeparationWorker.job_manager import JobCancelled, JobHandle, JobManager
 from SeparationWorker.paths import local_data_root
+
+
+# D12: cancelled rows reuse the existing `interrupted` status with a detail
+# distinct from other interrupted causes, matching the `f"{cause} {recovery}"`
+# shape the generic failure path already produces at `update(... error_detail=)`.
+_CANCELLED_ERROR_DETAIL = (
+    "job.cancelled Separation was cancelled; no partial result was kept. "
+    "Retry from the original audio."
+)
 
 
 TrackStatus = Literal[
@@ -502,6 +513,7 @@ class LibraryState:
     status: str | None = None
     sort_by: str = "created_at"
     descending: bool = True
+    queued_track_ids: tuple[str, ...] = ()
 
 
 def _start_thread(target: Callable[[], None]) -> None:
@@ -533,8 +545,23 @@ class SplitLibraryController:
         self._on_change = on_change
         self._on_success = on_success
         self._on_model_progress = on_model_progress
+        self._manager = JobManager(start_worker=start_worker, on_queue_change=self._queue_changed)
         self.state = LibraryState()
         self.refresh()
+
+    def _queue_changed(self, queued_ids: tuple[str, ...]) -> None:
+        """Forward JobManager's FIFO position onto the GUI thread (D4).
+
+        Fires on whatever thread just started or finished a job, exactly the
+        pattern `_relay_model_progress` established for `on_model_progress`,
+        so it is always marshalled through `self._dispatch`. No DB query: the
+        derived "Queued" label is a property of `LibraryState`, not the store.
+        """
+        self._dispatch(lambda: self._set_queued_ids(queued_ids))
+
+    def _set_queued_ids(self, queued_ids: tuple[str, ...]) -> None:
+        self.state = replace(self.state, queued_track_ids=queued_ids)
+        self._on_change(self.state)
 
     def _relay_model_progress(self, file_name: str, done: int, total: int) -> None:
         """Forward SEC-01's download-progress events onto the GUI thread.
@@ -584,7 +611,7 @@ class SplitLibraryController:
             raise ValueError(f"{profile.display_name} is not available")
         record = self.store.create(source_path, profile)
         self.refresh()
-        self._start_worker(lambda: self._prepare(record.track_id, profile))
+        self._manager.submit(record.track_id, lambda handle: self._prepare(handle, profile))
         return record
 
     def retry(self, track_id: str) -> bool:
@@ -599,10 +626,42 @@ class SplitLibraryController:
             return False
         self.store.update(track_id, status="preparing", error_detail=None)
         self.refresh()
-        self._start_worker(lambda: self._prepare(track_id, profile))
+        self._manager.submit(track_id, lambda handle: self._prepare(handle, profile))
         return True
 
-    def _prepare(self, track_id: str, profile: StemProfile) -> None:
+    def cancel(self, track_id: str) -> bool:
+        """Cancel a queued or running job (D11's confirmation is the caller's job).
+
+        A queued job never started a subprocess and never runs `_prepare`, so
+        it must be retired here; a running job's own `_prepare` unwind
+        (`except JobCancelled` / cancelled `PublicationError`) retires itself.
+        """
+        outcome = self._manager.cancel(track_id)
+        if outcome == "queued":
+            current = self.store.get(track_id)
+            if current is not None and current.status in {"preparing", "processing"}:
+                self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+            self._dispatch(self.refresh)
+        return outcome is not None
+
+    def shutdown(self, *, deadline: float = 8.0) -> bool:
+        """Cancel the running job and drain every queued job (D10, D11).
+
+        Queued jobs never start a subprocess, so they are retired here before
+        the bounded manager-level drain; the running job's own `_prepare`
+        unwind retires it once cancellation actually reaches it.
+        """
+        queued_ids = self._manager.queued_ids()
+        for track_id in queued_ids:
+            current = self.store.get(track_id)
+            if current is not None and current.status in {"preparing", "processing"}:
+                self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+        joined = self._manager.shutdown(deadline=deadline)
+        self._dispatch(self.refresh)
+        return joined
+
+    def _prepare(self, handle: JobHandle, profile: StemProfile) -> None:
+        track_id = handle.job_id
         record = self.store.get(track_id)
         if record is None:
             return
@@ -651,6 +710,7 @@ class SplitLibraryController:
                     record.result_directory,
                     profile=profile,
                     on_progress=self._relay_model_progress,
+                    cancellation=handle.token,
                 )
             )
             if result.resolve() != record.result_directory.resolve():
@@ -658,6 +718,23 @@ class SplitLibraryController:
             session = StemSession.load(result, profile=profile)
             duration = record.duration_seconds or session.duration_seconds
             self.store.update(track_id, status="ready", duration_seconds=duration, error_detail=None)
+        except JobCancelled:
+            current = self.store.get(track_id)
+            if current is not None:
+                self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+            self._dispatch(self.refresh)
+            return
+        except PublicationError as error:
+            current = self.store.get(track_id)
+            if current is not None:
+                if error.code == "publication.cancelled":
+                    self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+                else:
+                    cause = getattr(error, "cause", str(error))
+                    recovery = getattr(error, "recovery", "Retry from the original audio.")
+                    self.store.update(track_id, status="failed", error_detail=f"{cause} {recovery}".strip())
+            self._dispatch(self.refresh)
+            return
         except Exception as error:
             current = self.store.get(track_id)
             if current is not None:

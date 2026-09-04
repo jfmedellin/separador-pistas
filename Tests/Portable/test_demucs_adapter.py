@@ -364,6 +364,57 @@ class DemucsAdapterTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+class RunOwnedRegressionTests(unittest.TestCase):
+    """D7/D9: a cancelled job must never resurrect the CUDA->CPU fallback,
+    and the Popen swap behind run_demucs must not disturb diagnostics."""
+
+    def make_paths(self, root, name="song.mix.mp3"):
+        audio_file = Path(root) / name
+        audio_file.write_bytes(b"audio")
+        return audio_file, Path(root) / "exports" / "song-stems"
+
+    def test_job_cancelled_during_cuda_attempt_never_triggers_the_cpu_fallback(self):
+        from SeparationWorker.job_manager import JobCancelled
+
+        calls = {"cuda": 0, "cpu": 0}
+
+        def runner(command):
+            device = command[command.index("--device") + 1]
+            calls[device] += 1
+            if device == "cuda":
+                raise JobCancelled("job cancelled mid CUDA attempt")
+            raise AssertionError("the CPU fallback must never run after a cancellation")
+
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            with self.assertRaises(JobCancelled):
+                separate_audio(audio_file, output, runner=runner, cuda_probe=lambda: True)
+
+            self.assertEqual(1, calls["cuda"])
+            self.assertEqual(0, calls["cpu"])
+            self.assertFalse(output.exists())
+
+    def test_called_process_error_output_survives_the_popen_swap_for_diagnostics(self):
+        from SeparationWorker.demucs_adapter import _diagnostic_tail, _failure_cause
+
+        command = [
+            sys.executable,
+            "-c",
+            "import sys; print('boom line one'); print('boom line two'); sys.exit(9)",
+        ]
+        with patch("SeparationWorker.demucs_adapter._require_demucs_41"):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                run_demucs(command)
+
+        error = caught.exception
+        self.assertEqual(9, error.returncode)
+        tail = _diagnostic_tail(error)
+        self.assertIn("boom line one", tail)
+        self.assertIn("boom line two", tail)
+        self.assertIn("CPU exited with code 9", _failure_cause("CPU", error))
+
+
 class DemucsCliTests(unittest.TestCase):
     def test_cli_reports_published_directory(self):
         from SeparationWorker.cli import main

@@ -1,16 +1,19 @@
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
 from SeparationWorker.engine.pcm import PlanarPCM
+from SeparationWorker.engine.publication import publish_atomic
 from SeparationWorker.engine.stem_profile import LEGACY_PROFILE, METAL_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.engine.wav import encode_float32_wav
 from SeparationWorker.history import HistoryStore, SplitLibraryController, source_sha256
+from SeparationWorker.job_manager import JobCancelled
 
 
 class Queue:
@@ -694,6 +697,121 @@ class SplitLibraryControllerTests(unittest.TestCase):
         self.assertEqual("ready", ready.status)
         self.assertFalse((ready.result_directory / "conflicting.txt").exists())
         self.assertTrue(source.exists())
+
+    def test_cancel_mid_run_lands_on_interrupted_with_no_partial_artifacts_and_retry_still_works(self):
+        source = self.source(content=b"cancel me")
+        appdata = Path(self.temp.name) / "appdata"
+        attempts = []
+
+        def separate(input_path, result, **_options):
+            attempts.append(Path(input_path))
+            if len(attempts) == 1:
+                raise JobCancelled("job cancelled mid separation")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            copy_dir = appdata / "inputs" / record.track_id
+            copy_dir.mkdir(parents=True)
+            self.queue.finish()
+
+            interrupted = self.store.get(record.track_id)
+            self.assertEqual("interrupted", interrupted.status)
+            self.assertIn("job.cancelled", interrupted.error_detail)
+            self.assertFalse(copy_dir.exists())
+            self.assertFalse(interrupted.result_directory.exists())
+
+            self.assertTrue(controller.retry(record.track_id))
+            self.queue.finish()
+
+        retried = self.store.get(record.track_id)
+        self.assertEqual("ready", retried.status)
+        self.assertEqual(2, len(attempts))
+
+    def test_commit_if_active_blocks_the_commit_when_cancelled_just_before_publication(self):
+        source = self.source(content=b"race the commit")
+
+        def separate(input_path, result, *, cancellation=None, **_options):
+            def validate(_staging):
+                cancellation.cancel()
+
+            result = Path(result)
+            return publish_atomic(
+                result.parent,
+                result.name,
+                {"vocals.wav": b"vocals"},
+                cancellation=cancellation,
+                validate=validate,
+            )
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        record = controller.add(source, LEGACY_PROFILE.profile_id)
+        self.queue.finish()
+
+        interrupted = self.store.get(record.track_id)
+        self.assertEqual("interrupted", interrupted.status)
+        self.assertIn("job.cancelled", interrupted.error_detail)
+        self.assertFalse(interrupted.result_directory.exists())
+
+    def test_shutdown_cancels_the_running_job_and_drains_three_queued_jobs_within_the_deadline(self):
+        entered = threading.Event()
+        release = threading.Event()
+        started_sources = []
+
+        def separate(input_path, result, *, cancellation=None, **_options):
+            started_sources.append(Path(input_path))
+            entered.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("timed out waiting to be released")
+            if cancellation is not None and cancellation.cancelled:
+                raise JobCancelled("job cancelled during shutdown drain")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            # Real background threads (the default start_worker) are required
+            # here: one job must genuinely be running while shutdown() drains
+            # the rest concurrently.
+        )
+        running = controller.add(self.source("running"), LEGACY_PROFILE.profile_id)
+        self.assertTrue(entered.wait(timeout=5))
+        queued = [
+            controller.add(self.source(f"queued-{index}"), LEGACY_PROFILE.profile_id)
+            for index in range(3)
+        ]
+
+        # Let the running job's separate() finish shortly after shutdown
+        # starts waiting on it, so the bounded join succeeds well inside the
+        # deadline instead of exhausting it.
+        threading.Timer(0.2, release.set).start()
+        started_at = time.monotonic()
+        joined = controller.shutdown(deadline=3.0)
+        elapsed = time.monotonic() - started_at
+
+        self.assertTrue(joined)
+        self.assertLess(elapsed, 3.0)
+        self.assertEqual(1, len(started_sources))
+        interrupted_running = self.store.get(running.track_id)
+        self.assertEqual("interrupted", interrupted_running.status)
+        for record in queued:
+            self.assertEqual("interrupted", self.store.get(record.track_id).status)
 
 
 if __name__ == "__main__":

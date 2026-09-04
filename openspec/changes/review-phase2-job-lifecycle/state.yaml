@@ -11,8 +11,10 @@ phases:
   spec: done
   design: done
   tasks: done
-  apply: phase-a-in-progress
+  apply: phase-a-done-phase-b-in-progress
 chain_strategy: stacked-to-main
+commits:
+  - cba1a78 fix: remove dormant runtime supervisor package (ARC-04)
   verify: pending
   archive: pending
 

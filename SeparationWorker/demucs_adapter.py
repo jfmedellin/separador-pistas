@@ -36,6 +36,7 @@ from SeparationWorker.engine.stem_profile import (
     verify_manifest,
 )
 from SeparationWorker.engine.stem_session import STEM_NAMES
+from SeparationWorker.job_manager import run_owned
 
 
 MODEL_NAME = "htdemucs"
@@ -129,7 +130,7 @@ def run_demucs(command: Sequence[str]) -> None:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         if creationflags:
             options["creationflags"] = creationflags
-    subprocess.run(
+    run_owned(
         list(command),
         **options,
     )

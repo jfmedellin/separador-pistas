@@ -30,49 +30,49 @@ deletion task**, not a formality performed afterward.
 
 RED tests for `job_manager.py` (Testing Strategy table, unit rows 1–4):
 
-- [ ] B.1 RED: `Tests/Portable/test_job_manager.py` — a fifth `submit()` at default concurrency 1
+- [x] B.1 RED: `Tests/Portable/test_job_manager.py` — a fifth `submit()` at default concurrency 1
       queues instead of being rejected; jobs start in FIFO order; `on_queue_change` reports the
       exact order. Must fail on current `master` (module does not exist yet).
-- [ ] B.2 RED: same file — `terminate()` then process exit inside the grace period → `kill()`
+- [x] B.2 RED: same file — `terminate()` then process exit inside the grace period → `kill()`
       never called; no exit within grace → `kill()` called exactly once. Use the `ScriptedProcess`
       fake shape (the same one the deleted `test_worker_runtime.py` used) injected into the
       escalation helper.
-- [ ] B.3 RED: same file — `shutdown(deadline)` returns `False` within the deadline (never blocks
+- [x] B.3 RED: same file — `shutdown(deadline)` returns `False` within the deadline (never blocks
       past deadline + slack) when a job body waits on a never-set `Event`.
-- [ ] B.4 RED: same file — `run_owned()` with no current job behaves exactly like `subprocess.run`
+- [x] B.4 RED: same file — `run_owned()` with no current job behaves exactly like `subprocess.run`
       against a real short-lived `sys.executable -c` process (CLI/`Tools/` path unaffected).
-- [ ] B.5 GREEN: Create `SeparationWorker/job_manager.py` with `JobCancelled`, `JobHandle`
+- [x] B.5 GREEN: Create `SeparationWorker/job_manager.py` with `JobCancelled`, `JobHandle`
       (`register`/`unregister`), `current_job()` bound via `threading.local` (D5), `JobManager`
       (`collections.deque` + `threading.Lock` + non-reentrant `_pump()`, D2; `start_worker=`
       injectable, D3), `run_owned()` (token check at entry and exit, D8; terminate→5s grace→kill
       against a Win32 job object via `ctypes`, silent fallback to plain `Popen` on any Win32
       failure, D9), `shutdown(deadline)` (one shared monotonic budget, default 8.0s, never raises,
       D10). Run B.1–B.4 to green.
-- [ ] B.6 GREEN: Modify `SeparationWorker/demucs_adapter.py` `run_demucs` (113-135):
+- [x] B.6 GREEN: Modify `SeparationWorker/demucs_adapter.py` `run_demucs` (113-135):
       `subprocess.run(list(command), **options)` becomes `run_owned(list(command), **options)`;
       options dict, `_cpu_process_environment`, `CREATE_NO_WINDOW` unchanged.
-- [ ] B.7 GREEN: Modify `SeparationWorker/guitar_adapter.py` `run_specialist` (162-177): identical
+- [x] B.7 GREEN: Modify `SeparationWorker/guitar_adapter.py` `run_specialist` (162-177): identical
       one-line `run_owned` swap (D13 — zero production callers today, verified repo-wide; wired
       anyway so resolved decision #3 holds the moment a specialist profile is bound).
-- [ ] B.8 D7 regression test (Testing Strategy, integration row 5): `Tests/Portable/test_demucs_adapter.py`
+- [x] B.8 D7 regression test (Testing Strategy, integration row 5): `Tests/Portable/test_demucs_adapter.py`
       — an injected `runner` that sets the token and raises `JobCancelled` during the CUDA attempt
       propagates `JobCancelled` (not `CalledProcessError`) and the CPU fallback runner is never
       invoked (asserts call count == 1 for the CUDA runner, 0 for the CPU one). Proves cancel does
       NOT trigger `separate_audio:512-521`'s CUDA-failure-triggers-CPU-fallback path.
-- [ ] B.9 Regression test (Testing Strategy, integration row 6): same file — a child that writes to
+- [x] B.9 Regression test (Testing Strategy, integration row 6): same file — a child that writes to
       stdout then exits non-zero still reaches `_diagnostic_tail` with the same output after the
       `Popen` swap (`communicate()`'s `stdout=PIPE, stderr=STDOUT` capture preserved).
-- [ ] B.10 RED: `Tests/Portable/test_history.py` (Testing Strategy, integration row 7) — cancel
+- [x] B.10 RED: `Tests/Portable/test_history.py` (Testing Strategy, integration row 7) — cancel
       mid-run lands on `status="interrupted"` with the `job.cancelled` detail, leaves no
       `inputs/{track_id}` and no `library_root/{track_id}`, and `retry()` on that row still
       succeeds. Must fail on current `master`.
-- [ ] B.11 RED: same file (Testing Strategy, integration row 8) — `commit_if_active` blocks the
+- [x] B.11 RED: same file (Testing Strategy, integration row 8) — `commit_if_active` blocks the
       commit when the token is set just before publication, via a `validate=` hook passed into
       `publish_atomic`.
-- [ ] B.12 RED: same file (Testing Strategy, integration row 9) — `SplitLibraryController.shutdown(deadline)`
+- [x] B.12 RED: same file (Testing Strategy, integration row 9) — `SplitLibraryController.shutdown(deadline)`
       against a fake `separate` cancels one running job and drains three queued jobs; the queued
       jobs never start a subprocess; call returns within the bounded deadline.
-- [ ] B.13 GREEN: Modify `SeparationWorker/history.py`: `SplitLibraryController.__init__` builds a
+- [x] B.13 GREEN: Modify `SeparationWorker/history.py`: `SplitLibraryController.__init__` builds a
       `JobManager(start_worker=..., on_queue_change=...)` (D3, D4); `add()`/`retry()` (581-603)
       call `submit()` instead of `_start_worker`; `_prepare()` (605-675) takes `handle`, passes
       `cancellation=handle.token` to `separate`, gains an `except JobCancelled` /
@@ -80,7 +80,7 @@ RED tests for `job_manager.py` (Testing Strategy table, unit rows 1–4):
       `error_detail="job.cancelled ..."` (D12), inserted before the generic `except Exception` →
       `failed`; add `cancel(track_id)`, `shutdown(deadline)`, `_queue_changed`; `LibraryState`
       gains `queued_track_ids: tuple[str, ...] = ()`. Run B.10–B.12 to green.
-- [ ] B.14 Run full `python -m unittest discover -s Tests\Portable -v`; zero regressions,
+- [x] B.14 Run full `python -m unittest discover -s Tests\Portable -v`; zero regressions,
       including Phase A's post-deletion baseline. Ship as PR #2 (ARC-03 core), based on PR #1.
 
 ## Phase C: ARC-03 surface — cancel UI, Queued label, bounded close-drain
