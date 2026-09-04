@@ -419,5 +419,91 @@ class CloseConfirmationDeclinedTests(LibraryRowFixture):
         self.pump_until(lambda: self.app.history_store.get(record.track_id).status == "ready")
 
 
+class QueuedLabelRenderTests(LibraryRowFixture):
+    """CRITICAL gap (verify-report): no test exercised the derived "Queued"
+    label render path in gui.py's _render_library, fed by
+    SplitLibraryController.state.queued_track_ids. Uses the real
+    StemslayerApp, a real Tk root, and real background threads -- only the
+    subprocess-launch boundary (`_separate`) is faked, exactly like
+    CloseDrainTests/CloseConfirmationDeclinedTests above.
+    """
+
+    def test_queued_row_renders_the_queued_label_while_its_status_stays_preparing(self):
+        # Every staged input copy is renamed to "source<ext>" (ARC-02's
+        # immutable-copy staging), so jobs are distinguished by call order,
+        # not by the input path's name.
+        entered = [threading.Event() for _ in range(3)]
+        release = [threading.Event() for _ in range(3)]
+        started: list[int] = []
+
+        def blocking_separate(input_path, result_directory, *, profile, on_progress, cancellation, **_extra):
+            index = len(started)
+            started.append(index)
+            entered[index].set()
+            if not release[index].wait(timeout=10):
+                raise RuntimeError(f"timed out waiting to release job {index}")
+            write_stems(Path(result_directory))
+            return Path(result_directory)
+
+        self.app.library_controller._separate = blocking_separate
+
+        def add_source(name):
+            path = Path(self.temp.name) / f"{name}.wav"
+            path.write_bytes(f"audio-{name}".encode())
+            return self.app.library_controller.add(path, LEGACY_PROFILE.profile_id)
+
+        running = add_source("running")
+        self.assertTrue(entered[0].wait(timeout=5), "the running job never started")
+
+        add_source("queued-0")
+        third = add_source("queued-1")
+
+        # queued-1 is already reported the moment it is submitted (D4 fires
+        # on_queue_change on every submit, not only on promotion). Release
+        # the running job anyway so queued-0 starts and queued-1 becomes the
+        # sole remaining queued row -- that is the row that must render
+        # "Queued" once the label has to reflect an actual state change, not
+        # just its initial submit-time snapshot.
+        release[0].set()
+        self.assertTrue(entered[1].wait(timeout=5), "queued-0 was never promoted")
+
+        self.pump_until(
+            lambda: third.track_id in self.app.library_controller.state.queued_track_ids,
+            timeout=5.0,
+        )
+
+        preparing = self.app.history_store.get(third.track_id)
+        self.assertEqual("preparing", preparing.status)
+
+        self.app._show_view("separation")
+        self.root.update_idletasks()
+        self.root.update()
+
+        # _render_library packs a hairline divider frame as a bare sibling
+        # between rows (no nested body), so only frames with children are
+        # actual rows.
+        rows = [row for row in self.app.library_rows.winfo_children() if row.winfo_children()]
+        target_body = None
+        for row in rows:
+            body = row.winfo_children()[0]
+            titles = [
+                child.cget("text") for child in body.winfo_children() if isinstance(child, ctk.CTkLabel)
+            ]
+            if third.title in titles:
+                target_body = body
+                break
+        self.assertIsNotNone(target_body, "could not find the queued row by title")
+
+        labels = [
+            child.cget("text") for child in target_body.winfo_children() if isinstance(child, ctk.CTkLabel)
+        ]
+        self.assertIn("Queued", labels, "a queued row must render the derived Queued label")
+
+        release[1].set()
+        release[2].set()
+        self.pump_until(lambda: self.app.history_store.get(running.track_id).status == "ready")
+        self.pump_until(lambda: self.app.history_store.get(third.track_id).status == "ready")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,6 @@
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -13,7 +15,7 @@ from SeparationWorker.engine.stem_profile import LEGACY_PROFILE, METAL_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.engine.wav import encode_float32_wav
 from SeparationWorker.history import HistoryStore, SplitLibraryController, source_sha256
-from SeparationWorker.job_manager import JobCancelled
+from SeparationWorker.job_manager import JobCancelled, current_job
 
 
 class Queue:
@@ -812,6 +814,128 @@ class SplitLibraryControllerTests(unittest.TestCase):
         self.assertEqual("interrupted", interrupted_running.status)
         for record in queued:
             self.assertEqual("interrupted", self.store.get(record.track_id).status)
+
+    def test_controller_propagates_queued_track_ids_in_fifo_order_as_the_running_job_drains(self):
+        # CRITICAL gap (verify-report): SplitLibraryController._queue_changed
+        # / LibraryState.queued_track_ids propagation had zero covering test
+        # above raw JobManager.on_queue_change. Real background threads (the
+        # default start_worker) are required: one job must genuinely run
+        # while three more sit behind it in the FIFO queue.
+        #
+        # Every staged input copy is renamed to "source<ext>" (ARC-02's
+        # immutable-copy staging), so jobs are distinguished by call order,
+        # not by the input path's name.
+        entered = [threading.Event() for _ in range(4)]
+        release = [threading.Event() for _ in range(4)]
+        started: list[int] = []
+
+        def separate(input_path, result, **_options):
+            index = len(started)
+            started.append(index)
+            entered[index].set()
+            self.assertTrue(release[index].wait(timeout=5))
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+        )
+
+        # Distinct content per source: identical bytes would hash to the same
+        # identity, and once a job actually reaches separation (unlike the
+        # shutdown-drain test, which cancels these before they ever run),
+        # claim_identity() would collapse later jobs into the first one's
+        # record instead of running each independently.
+        running = controller.add(self.source("running", content=b"running"), LEGACY_PROFILE.profile_id)
+        self.assertTrue(entered[0].wait(timeout=5))
+
+        queued = [
+            controller.add(
+                self.source(f"queued-{index}", content=f"queued-{index}".encode()),
+                LEGACY_PROFILE.profile_id,
+            )
+            for index in range(3)
+        ]
+        expected_fifo = tuple(record.track_id for record in queued)
+
+        # Submitting behind a full concurrency slot reports the new queue
+        # position immediately (D4) -- without this, the first entry queued
+        # behind a running job would show no "Queued" state at all until some
+        # other job's start/finish happened to move the queue.
+        self.assertEqual(expected_fifo, controller.state.queued_track_ids)
+
+        release[0].set()
+        self.assertTrue(entered[1].wait(timeout=5))
+        self.assertEqual(expected_fifo[1:], controller.state.queued_track_ids)
+
+        release[1].set()
+        self.assertTrue(entered[2].wait(timeout=5))
+        self.assertEqual(expected_fifo[2:], controller.state.queued_track_ids)
+
+        release[2].set()
+        self.assertTrue(entered[3].wait(timeout=5))
+        self.assertEqual((), controller.state.queued_track_ids)
+
+        release[3].set()
+        all_records = [running] + queued
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if all(self.store.get(record.track_id).status == "ready" for record in all_records):
+                break
+            time.sleep(0.02)
+        self.assertTrue(all(self.store.get(record.track_id).status == "ready" for record in all_records))
+        self.assertEqual((), controller.state.queued_track_ids)
+
+    def test_cancel_terminates_a_real_running_subprocess_end_to_end_and_lands_on_interrupted(self):
+        # WARNING gap (verify-report): SplitLibraryController.cancel(), the
+        # exact method wired to the GUI's per-row Cancel button, was never
+        # directly invoked by any test end-to-end. This proves the whole
+        # path (cancel() -> JobManager.cancel() -> a real owned subprocess
+        # actually killed) against a real `python -c "time.sleep(10)"` child,
+        # not a mock.
+        entered = threading.Event()
+        process_holder: dict = {}
+
+        def separate(input_path, result, *, cancellation=None, **_options):
+            handle = current_job()
+            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+            process_holder["process"] = process
+            handle.register(process)
+            entered.set()
+            try:
+                process.wait()
+            finally:
+                handle.unregister(process)
+            if cancellation is not None and cancellation.cancelled:
+                raise JobCancelled("job cancelled mid separation")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+        )
+        record = controller.add(self.source("cancel-me"), LEGACY_PROFILE.profile_id)
+        self.assertTrue(entered.wait(timeout=5), "the job never started its real child process")
+
+        self.assertTrue(controller.cancel(record.track_id))
+
+        process = process_holder.get("process")
+        self.assertIsNotNone(process, "the job never registered its child process")
+        process.wait(timeout=10)
+        self.assertIsNotNone(process.poll(), "cancel() must actually terminate the real subprocess")
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self.store.get(record.track_id).status == "interrupted":
+                break
+            time.sleep(0.02)
+        interrupted = self.store.get(record.track_id)
+        self.assertEqual("interrupted", interrupted.status)
+        self.assertIn("job.cancelled", interrupted.error_detail)
 
 
 if __name__ == "__main__":

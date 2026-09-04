@@ -70,10 +70,16 @@ class JobManagerQueueTests(unittest.TestCase):
             bodies.pop(0)()
 
         self.assertEqual(["a", "b", "c", "d", "e"], started)
-        # "a" started the instant it was submitted (nothing queued behind it
-        # yet); each later drain reports the exact remaining FIFO order.
+        # Every submit() reports the queue immediately (including "a"'s own
+        # transient (\"a\",) before it is promoted) so a job never sits
+        # queued with no reported position; each later drain reports the
+        # exact remaining FIFO order as jobs are promoted in turn.
         self.assertEqual(
-            [(), ("c", "d", "e"), ("d", "e"), ("e",), ()],
+            [
+                ("a",), (),
+                ("b",), ("b", "c"), ("b", "c", "d"), ("b", "c", "d", "e"),
+                ("c", "d", "e"), ("d", "e"), ("e",), (),
+            ],
             queue_snapshots,
         )
         self.assertEqual((), manager.queued_ids())

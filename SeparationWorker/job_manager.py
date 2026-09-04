@@ -309,6 +309,14 @@ class JobManager:
     def submit(self, job_id: str, run: Callable[[JobHandle], None]) -> None:
         with self._lock:
             self._pending.append((job_id, run))
+            queued_ids = tuple(pending_job_id for pending_job_id, _ in self._pending)
+        # Report the new pending entry immediately (D4): _pump() below only
+        # fires on_queue_change when it actually promotes or drains a job, so
+        # without this, a job submitted behind a full concurrency slot would
+        # report no queue position at all until some other job's start/finish
+        # happened to move the queue -- silently hiding the very first queued
+        # entry's "Queued" state for its entire wait, not just delaying it.
+        self._on_queue_change(queued_ids)
         self._pump()
 
     def cancel(self, job_id: str) -> str | None:
