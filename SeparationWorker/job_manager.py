@@ -310,13 +310,20 @@ class JobManager:
         with self._lock:
             self._pending.append((job_id, run))
             queued_ids = tuple(pending_job_id for pending_job_id, _ in self._pending)
-        # Report the new pending entry immediately (D4): _pump() below only
-        # fires on_queue_change when it actually promotes or drains a job, so
-        # without this, a job submitted behind a full concurrency slot would
-        # report no queue position at all until some other job's start/finish
-        # happened to move the queue -- silently hiding the very first queued
-        # entry's "Queued" state for its entire wait, not just delaying it.
-        self._on_queue_change(queued_ids)
+            # Report the new pending entry immediately (D4), under the same
+            # lock as every other on_queue_change call site: _pump() below
+            # only fires when it actually promotes or drains a job, so
+            # without an immediate report here, a job submitted behind a
+            # full concurrency slot would show no queue position at all
+            # until some other job's start/finish happened to move the
+            # queue -- silently hiding its "Queued" state for its entire
+            # wait, not just delaying it. Firing it here, still holding the
+            # lock, is required, not cosmetic: firing after releasing raced
+            # a concurrent _pump() promoting this same job on another
+            # thread, letting this call's now-stale "still queued" report
+            # land after that promotion's correct one and permanently
+            # mis-display a running job as queued.
+            self._on_queue_change(queued_ids)
         self._pump()
 
     def cancel(self, job_id: str) -> str | None:
@@ -348,8 +355,8 @@ class JobManager:
             self._pending.clear()
             running = list(self._active.items())
             events = dict(self._finished)
-        if running:
-            self._on_queue_change(())
+            if running:
+                self._on_queue_change(())
         for _job_id, handle in running:
             handle.token.cancel()
             for process in handle._registered():
@@ -404,7 +411,12 @@ class JobManager:
                     self._active[job_id] = handle
                     self._finished[job_id] = finished_event
                     queued_ids = tuple(pending_job_id for pending_job_id, _ in self._pending)
-                self._on_queue_change(queued_ids)
+                    # Fired inside the same lock as submit()'s and cancel()'s
+                    # reports (see submit()'s comment): only the caller that
+                    # actually holds the lock when a job's state changes may
+                    # report it, so out-of-order delivery to a slower thread
+                    # that released the lock first cannot happen.
+                    self._on_queue_change(queued_ids)
                 self._start_worker(self._make_body(job_id, run, handle, finished_event))
         finally:
             with self._lock:
