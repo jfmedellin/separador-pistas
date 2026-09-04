@@ -11,27 +11,40 @@ phases:
   spec: done
   design: done
   tasks: done
-  apply: phase-a-and-b-done (C blocked on external SHA-256 manifest)
+  apply: phase-c-complete (C.1-C.14 done 2026-09-03; all three phases implemented)
   verify: pending
   archive: pending
 
-paused_at: 2026-08-31
+paused_at: 2026-09-03
+branch: fix/review-phase1-correctness-security (local only, not pushed)
+commits:
+  - f434fc0 docs: add external project review and Phase 1 SDD plan
+  - 854df88 fix: enforce single instance and immutable job input (ARC-01, ARC-02)
+  - (Phase C / SEC-01 changes are implemented on the branch but not yet committed --
+    left for the user/orchestrator to review and commit)
 resume_with: |
-  Working tree has Phase A (ARC-01) + Phase B (ARC-02) implemented and uncommitted,
-  398/398 Tests/Portable tests passing (independently re-run and confirmed by the
-  orchestrator, not just the apply sub-agent). Nothing has been committed or pushed.
+  Phase A (ARC-01) + Phase B (ARC-02) are committed (2 commits, single local
+  branch fix/review-phase1-correctness-security, not pushed, no PR opened yet)
+  -- the user chose one combined branch instead of the design's originally
+  suggested two-stacked-PR split.
+
+  Phase C (SEC-01, tasks C.1-C.14) is now implemented (uncommitted working tree
+  changes): SeparationWorker/model_manifest.py and model_manager.py (new),
+  demucs_adapter.py (--repo wiring + ensure_model call), history.py
+  (on_model_progress hook), gui.py (progress label wiring), Tools/stemslayer_portable.spec
+  (comment fixes), and new/updated tests. 411/411 Tests/Portable tests passing
+  (398 baseline + 13 new), re-run against both .venv and .venv-portable.
+
   To resume:
-    1. Decide whether to commit/PR Phase A and Phase B now (as two stacked PRs,
-       per design's stacked-to-main strategy) before starting Phase C, or keep
-       working in the same tree.
-    2. Phase C (SEC-01, tasks C.1-C.14) is blocked on an out-of-band prerequisite:
-       trusted full SHA-256 digests for the real Demucs `htdemucs` and `htdemucs_6s`
-       weight files. These must come from downloading the genuine files from
-       Demucs' own trusted source and computing/verifying the hashes -- not
-       something any agent should fabricate. Resolve this before continuing Phase C.
-    3. Phase C's two non-blocked apply-time verification tasks (C.1: does the
-       frozen worker forward `--repo` verbatim; C.2: does PyInstaller collect
-       `demucs/remote/*.yaml`) can be done independently of the manifest if useful.
+    1. Review the uncommitted Phase C diff and decide how to split/commit it
+       (the design originally suggested this as its own PR #3, based on PR #2).
+    2. Run sdd-verify against the full change (spec/design/tasks vs. implementation).
+    3. Documented apply-time deviations (see tasks.md's Phase C section): design's
+       `runtime/worker_main.py` reference was inexact (real file is demucs_worker.py);
+       model_manager.ensure_model() gained an extra `bundled_root` test-injection
+       parameter; separate_audio() gained `on_progress`; SplitLibraryController gained
+       `on_model_progress`; test_demucs_adapter.py needed module-level ensure_model
+       patching to avoid real network calls in ~40 pre-existing tests.
     4. All artifacts (proposal, specs, design, tasks, apply-progress) are mirrored
        in Engram under topic keys `sdd/review-phase1-correctness-security/*` and
        in this repo under `openspec/changes/review-phase1-correctness-security/`.

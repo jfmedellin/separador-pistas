@@ -16,6 +16,7 @@ from typing import Callable, Sequence
 import numpy as np
 import soundfile as sf
 
+from SeparationWorker import model_manager
 from SeparationWorker.engine.publication import publish_atomic
 from SeparationWorker.engine.role_metrics import (
     DETERMINISTIC_ROLE_THRESHOLDS,
@@ -220,6 +221,8 @@ def _command(
     staging: Path,
     device: str,
     profile: StemProfile = LEGACY_PROFILE,
+    *,
+    repo: Path,
 ) -> list[str]:
     executable = sys.executable
     if getattr(sys, "frozen", False):
@@ -239,6 +242,8 @@ def _command(
         *command,
         "--name",
         profile.primary_model,
+        "--repo",
+        str(repo),
         "--device",
         device,
         *device_options,
@@ -440,6 +445,7 @@ def separate_audio(
     specialist: SpecialistRunner | None = None,
     thresholds: RoleThresholds | None = None,
     cancellation=None,
+    on_progress: Callable[[str, int, int], None] | None = None,
 ) -> Path:
     """Separate one song and atomically create the requested result directory."""
     if not profile.enabled:
@@ -487,6 +493,14 @@ def separate_audio(
         )
     if _is_reusable_existing_result(output_directory, profile):
         return output_directory
+    try:
+        repo = model_manager.ensure_model(profile.primary_model, on_progress=on_progress)
+    except model_manager.ModelAcquisitionError as acquisition_error:
+        raise DemucsSeparationError(
+            acquisition_error.code,
+            acquisition_error.cause,
+            acquisition_error.recovery,
+        ) from acquisition_error
     output_directory.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="stemslayer-demucs-") as temporary:
@@ -494,7 +508,7 @@ def separate_audio(
         staging.mkdir()
         device = "cuda" if cuda_probe() else "cpu"
         try:
-            runner(_command(audio_file, staging, device, profile))
+            runner(_command(audio_file, staging, device, profile, repo=repo))
         except subprocess.CalledProcessError as cuda_error:
             if device != "cuda":
                 raise DemucsSeparationError(
@@ -504,7 +518,7 @@ def separate_audio(
                 ) from cuda_error
             _reset_directory(staging)
             try:
-                runner(_command(audio_file, staging, "cpu", profile))
+                runner(_command(audio_file, staging, "cpu", profile, repo=repo))
             except subprocess.CalledProcessError as cpu_error:
                 raise DemucsSeparationError(
                     "demucs.inference_failed",

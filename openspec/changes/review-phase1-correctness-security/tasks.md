@@ -37,26 +37,78 @@ Metadata is cosmetic (not part of job identity/stems), so this narrow deviation 
 
 ## Phase C: SEC-01 — App-Owned Model Manager
 
-**BLOCKING PREREQUISITE (out-of-band, not covered by any task below):** the trusted SHA-256
-digests for `955717e8-8726e21a.th` and every `htdemucs_6s` bag member (`.yaml` + member `.th`)
-must be supplied externally. No task here invents or substitutes placeholder hashes.
-`model_manifest.py`'s `REGISTERED_MODELS` cannot hold real entries, and **PR #3 must not merge**,
-until these values arrive.
+**BLOCKING PREREQUISITE — RESOLVED 2026-09-03.** Both `.th` weights were downloaded directly
+from Demucs' own trusted source (`https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/...`,
+resolved via the vendored `demucs/remote/files.txt`) and hashed with `sha256sum`. Each bag
+(`htdemucs.yaml` → `models: ['955717e8']`, `htdemucs_6s.yaml` → `models: ['5c90dfd2']`) has exactly
+one `.th` member, so no multi-file bag logic is needed. The `.yaml` hashes are of the vendored
+files already in `.venv` / `.venv-portable` (D7: copied, not downloaded) and match byte-for-byte
+across both venvs, confirming the frozen build ships the same bytes.
 
-- [ ] C.1 Apply-time verification: confirm the frozen worker (`runtime/worker_main.py` → `frozen_worker_path()`) forwards `--repo` verbatim to `demucs.separate`, with no argument stripping/rewriting in the frozen path.
-- [ ] C.2 Apply-time verification: confirm `Tools/stemslayer_portable.spec` (PyInstaller) collects `demucs/remote/*.yaml`; add an explicit `datas`/hidden-import entry if the current build omits it — D7's bag-file copy depends on this.
-- [ ] C.3 RED: `Tests/Portable/test_model_manager.py` — `ensure_model()` with a fake `registry`/`opener` fails closed with `ModelAcquisitionError("model.hash_mismatch")` on a SHA-256 mismatch; no partial repo dir survives.
-- [ ] C.4 RED: same file — an unregistered model name raises `ModelAcquisitionError("model.unregistered")`.
-- [ ] C.5 RED: same file — a non-`https` URL in a `ModelFile.urls` entry is rejected before any fetch attempt.
-- [ ] C.6 RED: same file — a mid-download failure (truncated stream / `opener` raises) leaves no partial `models/{name}` directory.
-- [ ] C.7 RED: same file — a previously verified, on-disk model is reused without calling `opener` again (assert call count == 0 on a second `ensure_model()` call).
-- [ ] C.8 GREEN: Create `SeparationWorker/model_manifest.py` with frozen `ModelFile`/`ModelEntry` dataclasses and the `REGISTERED_MODELS: Mapping[str, ModelEntry]` constant — structure only; real entries wait on the blocking prerequisite above.
-- [ ] C.9 GREEN: Create `SeparationWorker/model_manager.py` — `ensure_model(model_name, *, cache_root=None, registry=None, opener=None, on_progress=None) -> Path`; re-verify SHA-256 of every file on every call (D6); on miss/mismatch: `rmtree` stale dir, `mkdtemp` staging, stream `.th` files over HTTPS-only URLs with timeout + size cap, verify before placement, copy+verify bag `.yaml` from vendored `demucs/remote/` (D7), `os.replace(staging, models/{name})` (D8); define `ModelAcquisitionError(code, cause, recovery)`. Run C.3–C.7 to green.
-- [ ] C.10 RED: `Tests/Portable/test_model_manager.py` (or `test_demucs_adapter.py`) — `_command()`'s argv always contains `--repo <dir>` for both the CPU call and the CUDA-fallback call (capture argv via injected `runner`).
-- [ ] C.11 GREEN: Modify `SeparationWorker/demucs_adapter.py`: `_command()` (218-248) takes `repo` and emits `--repo <repo>`; `separate_audio()` calls `model_manager.ensure_model(profile.primary_model, on_progress=...)` between lines 489-492 and passes `repo` to both `_command` calls (497, 507); catch `ModelAcquisitionError`, re-raise as `DemucsSeparationError(...)` per D3. Run C.10 to green.
-- [ ] C.12 Update `Tools/stemslayer_portable.spec` line 3 stale comment about Demucs' own on-use download.
-- [ ] C.13 Wire the optional `on_progress` callback from `ensure_model()` through `separate_audio()` to the GUI controller hook (matching the `on_change`/`on_success` convention); exact widget binding is an apply-time detail.
-- [ ] C.14 Run full `python -m unittest discover -s Tests\Portable -v`; zero regressions across all three phases. Ship as PR #3 (SEC-01), based on PR #2. Do not merge until the blocking prerequisite manifest values are supplied.
+| file_name | sha256 |
+|---|---|
+| `955717e8-8726e21a.th` | `8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4` |
+| `htdemucs.yaml` | `239c445d0b14454d541ad8bd9bb271c9e536d267e8a4625208744cbb2e7bb66c` |
+| `5c90dfd2-34c22ccb.th` | `34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd` |
+| `htdemucs_6s.yaml` | `207405151270af8fd81c2373c25d27950916682ac91dca7884a11ce13dad6f58` |
+
+The `8726e21a` / `34c22ccb` filename suffixes are Demucs' own convention (first 8 hex chars of the
+true sha256) and match these computed digests exactly — independent confirmation the downloaded
+bytes are genuine and unmodified. `model_manifest.py`'s `REGISTERED_MODELS` can now hold real
+entries; C.3–C.14 are unblocked.
+
+- [x] C.1 Apply-time verification: confirm the frozen worker (`runtime/worker_main.py` → `frozen_worker_path()`) forwards `--repo` verbatim to `demucs.separate`, with no argument stripping/rewriting in the frozen path.
+- [x] C.2 Apply-time verification: confirm `Tools/stemslayer_portable.spec` (PyInstaller) collects `demucs/remote/*.yaml`; add an explicit `datas`/hidden-import entry if the current build omits it — D7's bag-file copy depends on this.
+- [x] C.3 RED: `Tests/Portable/test_model_manager.py` — `ensure_model()` with a fake `registry`/`opener` fails closed with `ModelAcquisitionError("model.hash_mismatch")` on a SHA-256 mismatch; no partial repo dir survives.
+- [x] C.4 RED: same file — an unregistered model name raises `ModelAcquisitionError("model.unregistered")`.
+- [x] C.5 RED: same file — a non-`https` URL in a `ModelFile.urls` entry is rejected before any fetch attempt.
+- [x] C.6 RED: same file — a mid-download failure (truncated stream / `opener` raises) leaves no partial `models/{name}` directory.
+- [x] C.7 RED: same file — a previously verified, on-disk model is reused without calling `opener` again (assert call count == 0 on a second `ensure_model()` call).
+- [x] C.8 GREEN: Create `SeparationWorker/model_manifest.py` with frozen `ModelFile`/`ModelEntry` dataclasses and the `REGISTERED_MODELS: Mapping[str, ModelEntry]` constant, populated with the real, independently-verified hashes from the blocking prerequisite above.
+- [x] C.9 GREEN: Create `SeparationWorker/model_manager.py` — `ensure_model(model_name, *, cache_root=None, registry=None, opener=None, on_progress=None, bundled_root=None) -> Path`; re-verify SHA-256 of every file on every call (D6); on miss/mismatch: `rmtree` stale dir, `mkdtemp` staging (created inside `cache_root`, matching `publish_atomic`'s own same-volume convention for atomic `os.replace`), stream `.th` files over HTTPS-only URLs with a timeout and size cap, verify before placement, copy+verify bag `.yaml` from a vendored `demucs/remote/`-shaped directory (D7), `os.replace(staging, models/{name})` (D8); define `ModelAcquisitionError(code, cause, recovery)`. Ran C.3–C.7 to green.
+- [x] C.10 RED: `Tests/Portable/test_model_manager.py` — `_command()`'s argv always contains `--repo <dir>` for both the CPU call and the CUDA-fallback call (capture argv via injected `runner`).
+- [x] C.11 GREEN: Modified `SeparationWorker/demucs_adapter.py`: `_command()` takes a required keyword-only `repo` and emits `--repo <repo>` right after `--name`; `separate_audio()` calls `model_manager.ensure_model(profile.primary_model, on_progress=on_progress)` right after the reusable-result short-circuit and passes `repo` to both `_command` calls (CPU and CUDA-fallback); catches `ModelAcquisitionError`, re-raises as `DemucsSeparationError(code, cause, recovery)` per D3. Ran C.10 to green; updated `Tests/Portable/test_demucs_adapter.py`'s existing `_command()`/`separate_audio()` tests accordingly (see deviations below) — zero regressions.
+- [x] C.12 Updated `Tools/stemslayer_portable.spec` line 3 stale comment about Demucs' own on-use download; also documented, next to the `collect_all("demucs")` loop, that it already sweeps `demucs/remote/*.yaml` with no `excludes` (verified at apply time — both `htdemucs.yaml` and `htdemucs_6s.yaml` are present in the collected datas).
+- [x] C.13 Wired the optional `on_progress` callback from `ensure_model()` through `separate_audio()` to `SplitLibraryController`'s new `on_model_progress` constructor hook (matching the `on_change`/`on_success` convention; relayed through `self._dispatch` since it fires on the background worker thread) and from there to a new minimal `StemslayerApp._model_download_progress` GUI binding (a small status label under the library header).
+- [x] C.14 Ran full `python -m unittest discover -s Tests\Portable -v` (both `.venv` and `.venv-portable`); 411/411 passing (398 Phase A/B baseline + 13 new Phase C tests), zero regressions across all three phases. Ready to ship as PR #3 (SEC-01), based on PR #2.
+
+**Apply-time findings and deviations from design (documented, not silent):**
+
+1. **C.1 — design's file reference was inexact.** The design says the frozen worker is
+   `runtime/worker_main.py` → `frozen_worker_path()`. In fact `frozen_worker_path()`
+   resolves to `StemslayerWorker.exe`, built by `Tools/stemslayer_portable.spec` from
+   `SeparationWorker/demucs_worker.py` (`runtime/worker_main.py` is unrelated scaffolding
+   used only by `test_worker_runtime.py`). `demucs_worker.py:main(argv)` calls
+   `demucs.separate.main(argv)` with the argv list untouched — no stripping or rewriting —
+   which satisfies C.1's requirement regardless of the file-name discrepancy.
+2. **C.2 — no code change was needed.** `collect_all("demucs")` already collects every
+   non-`.py` data file under the installed `demucs` package with no `excludes`, which was
+   confirmed at apply time to include all 11 `demucs/remote/*.yaml` files (including
+   `htdemucs.yaml` and `htdemucs_6s.yaml`) plus `files.txt`. Only a clarifying comment was
+   added; D7's bag-file copy depends on this and it already holds.
+3. **`model_manager.ensure_model()` gained one parameter beyond the design's four:
+   `bundled_root: Path | None = None`.** It defaults to the real vendored
+   `demucs/remote/` directory (`Path(demucs.__file__).parent / "remote"`), so every
+   production call site is unaffected. It exists purely so `Tests/Portable/test_model_manager.py`
+   can point D7's bundled-file copy step at a throwaway directory instead of the real
+   vendored path — the same testability rationale the design already gives for
+   `cache_root`/`registry`/`opener`.
+4. **`separate_audio()` gained one new keyword-only parameter: `on_progress`,** forwarded
+   verbatim to `model_manager.ensure_model()`. This was necessary for C.13's wiring and is
+   additive (default `None`), so no existing caller breaks.
+5. **`Tests/Portable/test_demucs_adapter.py` needed updating, not just `demucs_adapter.py`.**
+   Every existing test that calls `_command()` directly now passes `repo=`, and the whole
+   module patches `model_manager.ensure_model` (via `setUpModule`/`tearDownModule`) to a
+   fixed fake path, because `separate_audio()` now calls real model acquisition on every
+   run and none of that module's ~40 pre-existing tests exercise acquisition itself (that
+   coverage lives in `test_model_manager.py`). Without this, every pre-existing test in
+   that file would have attempted a real network download on first run.
+6. **`SplitLibraryController.__init__` gained one new keyword-only parameter:
+   `on_model_progress`,** defaulting to a no-op, matching the `on_change`/`on_success`
+   convention exactly. `history.py`'s own tests (`test_history.py`) were unaffected because
+   every fake `separate` callable there already accepts `**_options`.
+7. **Do not merge until the blocking prerequisite manifest values are supplied** — this
+   condition is now satisfied; the real SHA-256 values are in `model_manifest.py`.
 
 ## Review Workload Forecast
 

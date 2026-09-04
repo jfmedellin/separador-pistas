@@ -522,6 +522,7 @@ class SplitLibraryController:
         dispatch: Callable[[Callable[[], None]], None] = lambda callback: callback(),
         on_change: Callable[[LibraryState], None] = lambda _state: None,
         on_success: Callable[[TrackRecord], None] = lambda _record: None,
+        on_model_progress: Callable[[str, int, int], None] = lambda *_args: None,
     ):
         self.store = store
         self._separate = separate
@@ -531,8 +532,20 @@ class SplitLibraryController:
         self._dispatch = dispatch
         self._on_change = on_change
         self._on_success = on_success
+        self._on_model_progress = on_model_progress
         self.state = LibraryState()
         self.refresh()
+
+    def _relay_model_progress(self, file_name: str, done: int, total: int) -> None:
+        """Forward SEC-01's download-progress events onto the GUI thread.
+
+        `model_manager.ensure_model()` calls its `on_progress` callback
+        synchronously from this background worker thread (`_start_worker`),
+        so it must never touch GUI state directly; every event is routed
+        through `self._dispatch`, the same queue `on_change`/`on_success`
+        already use to reach the GUI thread safely.
+        """
+        self._dispatch(lambda: self._on_model_progress(file_name, done, total))
 
     def refresh(self) -> LibraryState:
         self.state = replace(
@@ -632,7 +645,14 @@ class SplitLibraryController:
             )
             self._dispatch(self.refresh)
             self._discard_invalid_managed_result(record, profile)
-            result = Path(self._separate(staged_input, record.result_directory, profile=profile))
+            result = Path(
+                self._separate(
+                    staged_input,
+                    record.result_directory,
+                    profile=profile,
+                    on_progress=self._relay_model_progress,
+                )
+            )
             if result.resolve() != record.result_directory.resolve():
                 raise RuntimeError("Separation published outside the managed library directory")
             session = StemSession.load(result, profile=profile)

@@ -563,6 +563,7 @@ class StemslayerApp:
             dispatch=self._events.put,
             on_change=self._render_library,
             on_success=self._library_succeeded,
+            on_model_progress=self._model_download_progress,
         )
         self._render_state(self.controller.state)
         self._render_mixer_state(self.mixer_controller.state)
@@ -803,6 +804,12 @@ class StemslayerApp:
         copy.pack(side="left")
         ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=ui_font("display", bold=True), anchor="w").pack(fill="x")
         ctk.CTkLabel(copy, text="Stored locally. Drop an audio file anywhere here to add a song.", text_color=COLORS["muted"], font=ui_font("caption"), anchor="w").pack(fill="x", pady=(4, 0))
+        # SEC-01: shows first-use model download progress; empty otherwise.
+        self.library_model_status = tk.StringVar()
+        ctk.CTkLabel(
+            copy, textvariable=self.library_model_status, text_color=COLORS["muted"],
+            font=ui_font("label"), anchor="w",
+        ).pack(fill="x", pady=(2, 0))
         add_song = ctk.CTkFrame(header, fg_color=COLORS["accent"], corner_radius=8, height=36)
         add_song.pack_propagate(False)
         add_song.pack(side="right")
@@ -1449,6 +1456,21 @@ class StemslayerApp:
 
     def _library_succeeded(self, record: TrackRecord) -> None:
         self._open_mixer_folder(record.result_directory, title=record.title)
+        self.library_model_status.set("")
+
+    def _model_download_progress(self, file_name: str, done: int, total: int) -> None:
+        """SEC-01: surface `model_manager.ensure_model()`'s first-use download.
+
+        Reached only through `SplitLibraryController._relay_model_progress`,
+        which already dispatches onto the GUI thread, so this runs safely.
+        """
+        if self._closed:
+            return
+        if total > 0:
+            percent = min(100, int(done * 100 / total))
+            self.library_model_status.set(f"Preparing {file_name}: {percent}%")
+        else:
+            self.library_model_status.set(f"Preparing {file_name}…")
 
     def _remove_library_track(self, track_id: str) -> None:
         def release(record: TrackRecord) -> None:
