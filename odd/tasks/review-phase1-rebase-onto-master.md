@@ -22,12 +22,31 @@ only adds docs). Conflicts are confined to `SeparationWorker/gui.py` and
 - Route: direct inline (rebase is mechanical, conflicts limited to 2 files).
 
 ## Tasks
-- [ ] T1 Baseline: master suite and branch suite pass before rebase (record counts).
-- [ ] T2 Confirm master did not already fix ARC-01/02/03/04, SEC-01 (grep evidence).
-- [ ] T3 `git rebase origin/master`, resolve each conflicting commit.
-- [ ] T4 Full suite green on the rebased branch; `compileall` clean.
+- [x] T1 Baseline: master suite and branch suite pass before rebase (record counts).
+- [x] T2 Confirm master did not already fix ARC-01/02/03/04, SEC-01 (grep evidence).
+- [x] T3 `git rebase origin/master`, resolve each conflicting commit.
+- [x] T4 Full suite green on the rebased branch; `compileall` clean.
 - [ ] T5 Manual smoke of the touched GUI surfaces (cancel button, queued label, single-instance).
 - [ ] T6 Close Phase 1 SDD verify/archive; push branch and open PR.
 
 ## Evidence
-(filled per task)
+- T1: master (4f16986) 397/397 OK; branch (636f49c) 417/417 OK, with
+  "RuntimeError: main thread is not in main loop" ignored-exception noise.
+- T2: `git grep` on origin/master finds no instance lock, model manager /
+  SHA-256 manifest, JobManager, or immutable input copy; `runtime/supervisor.py`
+  still present. Master commit 2f5794b only adds .gitignore + odd/tasks docs.
+- T3: rebase stopped twice, both in gui.py: SEC-01 (header labels: kept
+  master's `ui_font` scale, re-added the model-download status label) and
+  ARC-03 surface (master moved rows to a grid: Queued label gets its own
+  column 1, Cancel takes the action column 5). Folded via autosquash into
+  the original ARC-03 commit. Route: direct inline.
+- T4: 429/429 OK in three consecutive full runs + compileall clean.
+  Root-caused an order-dependent failure in test_history
+  (`test_old_content_add_during_superseded_cleanup_claims_its_own_row`):
+  GUI fixtures left tk.Variable objects for a later GC cycle, which ran on a
+  JobManager worker thread and deadlocked in Variable.__del__. Fixed in the
+  fixtures (`gc.collect()` after destroy) -- commit 67eef30. Latent on the
+  pre-rebase branch (the noise), surfaced by master's new tests.
+- T5: pending -- needs a real window; not proven by the suite.
+- T6: pending -- push/PR is the user's call. Phase 1 SDD verify/archive still
+  open under openspec/changes/review-phase1-correctness-security.
