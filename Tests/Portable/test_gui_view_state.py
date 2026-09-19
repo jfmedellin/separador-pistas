@@ -1,17 +1,22 @@
+import re
 import unittest
 from pathlib import Path
 
 from SeparationWorker.engine.mixer import MixSetting, MixerSnapshot
 from SeparationWorker.gui import (
     APP_NAME,
+    FONT_FAMILY,
+    TYPE_SCALE,
     MixerViewModel,
     library_row_detail,
     main,
     parse_drop_paths,
     space_toggles_playback,
+    ui_font,
 )
 from SeparationWorker.history import TrackRecord
 from SeparationWorker.mixer_controller import MixerState
+import SeparationWorker.gui
 
 
 class FakeSession:
@@ -234,6 +239,20 @@ class SpacebarTransportGuardTests(unittest.TestCase):
 
     def test_denies_when_view_is_not_mixer_and_cannot_play(self):
         self.assertFalse(space_toggles_playback("separation", False))
+
+
+class TypeScaleTests(unittest.TestCase):
+    def test_every_role_resolves_to_a_readable_size(self):
+        for role, size in TYPE_SCALE.items():
+            self.assertEqual((FONT_FAMILY, size), ui_font(role))
+            self.assertGreaterEqual(size, 11)
+            self.assertEqual("bold", ui_font(role, bold=True)[-1])
+        self.assertEqual(("Consolas", 11), ui_font("caption", mono=True))
+
+    def test_gui_module_has_no_literal_font_sizes(self):
+        source = Path(SeparationWorker.gui.__file__).read_text(encoding="utf-8")
+        offenders = re.findall(r'\("(?:Segoe UI|Consolas)",\s*\d+', source)
+        self.assertEqual([], offenders, f"literal font sizes remain: {offenders}")
 
 
 if __name__ == "__main__":
