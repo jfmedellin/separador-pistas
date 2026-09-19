@@ -130,5 +130,4 @@ the working tree.
 
 ## Next step
 
-T3 — verify and commit (commit intentionally left to the user/orchestrator;
-this pass only wrote and verified the docs).
+All tasks closed. Push and pull request remain the user's decision.

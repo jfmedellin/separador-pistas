@@ -17,7 +17,7 @@ Metal Stereo splits the isolated guitar by **where it sits in the stereo image**
 
 So it fails in exactly the ways you would expect it to. A rhythm part recorded centred lands in the centre lane. A lead harmonised wide lands in the sides lane. Anything else centred in the mix that survives into the guitar stem — and in a dense metal mix there is always some — lands in the centre lane next to the solo.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#metal-stereo) for the full profile breakdown, including why the disabled **Metal** (lead/rhythm) profile ships anyway.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#metal-stereo) for the full profile breakdown, including why the disabled **Metal Roles** (lead/rhythm) profile ships anyway.
 
 ## Download the portable Windows release
 

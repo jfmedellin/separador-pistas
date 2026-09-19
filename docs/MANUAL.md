@@ -42,7 +42,7 @@ No hace falta instalador, ni Python, ni Git, ni instalar Demucs por separado: to
 
 ![Pestaña SPLIT vacía, con la zona para soltar un archivo de audio y el botón Browse file](img/00-split-empty.png)
 
-Al abrir Stemslayer por primera vez verás la pestaña SPLIT vacía, con el mensaje "No file selected" y un botón **Browse file** para elegir tu canción.
+Al abrir Stemslayer por primera vez verás la pestaña SPLIT vacía, con el mensaje "No file selected" y un botón **Browse file** para elegir tu canción. En cuanto elijas el archivo, la aplicación te preguntará con qué perfil separarlo (ver [Los perfiles](#los-perfiles-legacy-y-metal-stereo)).
 
 La primera vez que separes una canción con el perfil por defecto (Legacy), la aplicación descarga los pesos del modelo `htdemucs`. Esta descarga solo ocurre una vez y necesita conexión a internet; después de esa primera vez, todo funciona sin conexión. Si eliges el perfil Metal Stereo por primera vez, se descarga un segundo modelo, `htdemucs_6s`, porque es un modelo distinto al de Legacy.
 
@@ -96,10 +96,13 @@ Desde el MIXER, el botón **Export** abre un panel donde eliges qué pistas quie
 
 ## Los perfiles: Legacy y Metal Stereo
 
-Stemslayer separa una canción según el perfil que elijas:
+Cada vez que eliges una canción, Stemslayer te pregunta con qué perfil quieres separarla:
+
+![Diálogo Choose a split profile, con Legacy, Metal Stereo y Metal Roles marcado como Unavailable](img/04-profile.png)
 
 - **Legacy** (el perfil por defecto) publica cuatro pistas: vocals, drums, bass y other.
 - **Metal Stereo** publica seis: las mismas cuatro, más Guitar Center y Guitar Sides.
+- **Metal Roles** aparece en la lista pero con el botón **Unavailable**: no se puede elegir, y el propio diálogo explica por qué.
 
 ### Lo que Metal Stereo hace de verdad, sin adornos
 
@@ -115,7 +118,7 @@ Por eso falla en formas predecibles:
 
 Esta es exactamente la razón por la que las pistas se llaman por su posición ("Center", "Sides") y nunca por un rol musical ("lead", "rhythm").
 
-El tercer perfil, **Metal** (guitarra líder / guitarra rítmica), aparece en la aplicación marcado como no disponible, a propósito, mostrando el motivo en lugar de ocultarlo. No se puede activar cambiando ninguna opción. Puedes leer la razón técnica completa en [ARCHITECTURE.md](ARCHITECTURE.md).
+El tercer perfil, **Metal Roles** (guitarra líder / guitarra rítmica), aparece en el diálogo marcado como **Unavailable**, a propósito, mostrando el motivo en lugar de ocultarlo: no se ha admitido ningún modelo especialista capaz de hacer esa separación, así que el perfil no puede ejecutarse. No se activa cambiando una opción ni editando un ajuste. Puedes leer la razón técnica completa, y qué tendría que cumplir un modelo para ser admitido, en [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Preguntas frecuentes
 

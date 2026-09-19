@@ -10,7 +10,7 @@ A profile is the layout one separation publishes: which lanes exist, in which or
 | --- | --- | --- |
 | Legacy | vocals, drums, bass, other | Available. This is the default. |
 | Metal Stereo | vocals, drums, bass, guitar center, guitar sides, other | Available. Splits the isolated guitar by stereo position. |
-| Metal | vocals, drums, bass, lead guitar, rhythm guitar, other | **Not available.** |
+| Metal Roles | vocals, drums, bass, lead guitar, rhythm guitar, other | **Not available.** |
 
 ### Metal Stereo
 <a id="metal-stereo"></a>
@@ -21,16 +21,16 @@ Metal Stereo isolates the guitar with `htdemucs_6s`, then splits that one stem i
 
 This is why the lanes are named for the position they describe and never for a role. Metal Stereo is not, and must not be presented as, lead and rhythm separation.
 
-The split itself is arithmetic, not inference: centre plus sides reconstructs the isolated guitar. It is exact in float32, and the published lanes reconstruct to about 90 dB because a result inherits the 16-bit sample format Demucs wrote, which is a quantisation floor rather than a loss in the split. There are no weights to admit and no licence to satisfy, which is why this profile can ship enabled while the Metal profile below cannot.
+The split itself is arithmetic, not inference: centre plus sides reconstructs the isolated guitar. It is exact in float32, and the published lanes reconstruct to about 90 dB because a result inherits the 16-bit sample format Demucs wrote, which is a quantisation floor rather than a loss in the split. There are no weights to admit and no licence to satisfy, which is why this profile can ship enabled while the Metal Roles profile below cannot.
 
-### Metal
+### Metal Roles
 <a id="metal"></a>
 
-**Metal cannot separate lead from rhythm guitar today, and this release does not do it.** The profile exists so the surrounding infrastructure is in place, and it is shown in the app as unavailable with the reason, rather than hidden.
+**Metal Roles cannot separate lead from rhythm guitar today, and this release does not do it.** The profile exists so the surrounding infrastructure is in place, and it is shown in the app as unavailable with the reason, rather than hidden.
 
 The reason is that no separation model exists that decomposes guitar into semantic lead and rhythm roles while also being redistributable and runnable offline on Windows. Every publicly available candidate was reviewed and rejected; `Compliance/evidence/metal-guitar/CONTRACT.md` records the rejection matrix and the contract any future model must satisfy.
 
-Metal cannot be turned on by editing a flag. A profile that requires a specialist and has none registered cannot be constructed in the enabled state, and readiness, separation, and the GUI each refuse it independently. Enabling it requires admitting a model through `Tools/admit_metal_guitar_model.py`, which is deny-by-default and reports `DENIED` in the shipped build:
+Metal Roles cannot be turned on by editing a flag. A profile that requires a specialist and has none registered cannot be constructed in the enabled state, and readiness, separation, and the GUI each refuse it independently. Enabling it requires admitting a model through `Tools/admit_metal_guitar_model.py`, which is deny-by-default and reports `DENIED` in the shipped build:
 
 ```powershell
 .\.venv\Scripts\python.exe .\Tools\admit_metal_guitar_model.py --offline
