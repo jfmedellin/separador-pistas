@@ -81,6 +81,7 @@ CHANNEL_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six",
 # This height must fit the tallest profile's content plus a bottom margin
 # matching the top one; test_gui_lane_rendering measures and enforces it.
 SEPARATION_CONTENT_TOP = 30
+LIBRARY_MAX_WIDTH = 1100
 SEPARATION_VIEW_HEIGHT = 764
 
 # The mixer sizes itself to the lane strip instead of squeezing the strip into
@@ -164,6 +165,23 @@ def format_time(seconds: float) -> str:
     return f"{int(minutes):02d}:{remainder:05.2f}"
 
 
+def library_row_detail(record: TrackRecord, *, profile_name: str | None = None) -> str:
+    """Compose a library row's detail column from values every record carries.
+
+    BPM, key, and genre are left out on purpose: the catalog never computes
+    the first two, and tags rarely carry the third, so printing them only
+    filled the row with dashes.
+    """
+    duration = format_time(record.duration_seconds).split(".")[0] if record.duration_seconds else "—"
+    try:
+        date = datetime.fromisoformat(record.created_at_utc.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+    except ValueError:
+        date = "—"
+    parts = [profile_name] if profile_name else []
+    parts.extend((duration, date))
+    return "  ·  ".join(parts)
+
+
 def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
     """Draw a small stroke-based glyph on a bare canvas (no icon-font dependency)."""
     canvas.delete("icon")
@@ -213,12 +231,6 @@ def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
         canvas.create_rectangle(size * 0.28, lid_y, size * 0.72, size * 0.86, outline=color, width=2, tags="icon")
         canvas.create_line(size * 0.42, size * 0.42, size * 0.42, size * 0.74, fill=color, width=1.6, tags="icon")
         canvas.create_line(size * 0.58, size * 0.42, size * 0.58, size * 0.74, fill=color, width=1.6, tags="icon")
-    elif kind == "sliders":
-        knob_x = {0.3: 0.62, 0.5: 0.38, 0.7: 0.5}
-        for y in (0.3, 0.5, 0.7):
-            canvas.create_line(size * 0.16, size * y, size * 0.84, size * y, fill=color, width=2, tags="icon")
-        for y, x in knob_x.items():
-            canvas.create_oval(size * x - 3, size * y - 3, size * x + 3, size * y + 3, fill=color, outline="", tags="icon")
     elif kind == "search":
         canvas.create_oval(size * 0.14, size * 0.14, size * 0.62, size * 0.62, outline=color, width=2, tags="icon")
         canvas.create_line(size * 0.58, size * 0.58, size * 0.86, size * 0.86, fill=color, width=2, tags="icon")
@@ -746,13 +758,23 @@ class StemslayerApp:
     def _build_library_view(self, shell) -> None:
         panel = ctk.CTkFrame(shell, fg_color=COLORS["window"], corner_radius=0)
         self._library_panel = panel
+        # The panel fills the window, but a four-column list gains nothing
+        # from 2000px: on a wide monitor the actions drift a screen away from
+        # the song they belong to. Content stays in a centered, capped column.
+        content = ctk.CTkFrame(panel, fg_color="transparent", width=LIBRARY_MAX_WIDTH)
+        content.pack_propagate(False)
+        content.place(relx=0.5, rely=0, anchor="n", relheight=1)
+        panel.bind(
+            "<Configure>",
+            lambda event: content.configure(width=min(event.width, LIBRARY_MAX_WIDTH)),
+        )
 
-        header = ctk.CTkFrame(panel, fg_color="transparent")
+        header = ctk.CTkFrame(content, fg_color="transparent")
         header.pack(fill="x", padx=32, pady=(24, 18))
         copy = ctk.CTkFrame(header, fg_color="transparent")
         copy.pack(side="left")
         ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=("Segoe UI", 22, "bold"), anchor="w").pack(fill="x")
-        ctk.CTkLabel(copy, text="Stored locally. Open ready stems without separating again.", text_color=COLORS["muted"], font=("Segoe UI", 11), anchor="w").pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(copy, text="Stored locally. Drop an audio file anywhere here to add a song.", text_color=COLORS["muted"], font=("Segoe UI", 12), anchor="w").pack(fill="x", pady=(4, 0))
         add_song = ctk.CTkFrame(header, fg_color=COLORS["accent"], corner_radius=8, height=36)
         add_song.pack_propagate(False)
         add_song.pack(side="right")
@@ -771,7 +793,7 @@ class StemslayerApp:
         # A transparent toolbar directly on the window background, not a
         # bordered "surface" box -- the boxed controls plus boxed panel read
         # as visually loud with a real catalogue on screen.
-        controls = ctk.CTkFrame(panel, fg_color="transparent")
+        controls = ctk.CTkFrame(content, fg_color="transparent")
         controls.pack(fill="x", padx=32, pady=(0, 8))
         search_box = ctk.CTkFrame(controls, fg_color="transparent")
         search_box.pack(side="left")
@@ -779,56 +801,31 @@ class StemslayerApp:
         search_row.pack(fill="x")
         _icon(search_row, "search", 16, COLORS["muted2"], COLORS["window"]).pack(side="left", padx=(0, 6))
         self.library_search = ctk.CTkEntry(
-            search_row, placeholder_text="Search title or artist", width=220, height=28,
-            fg_color=COLORS["window"], border_width=0, text_color=COLORS["text"],
+            search_row, placeholder_text="Search title or artist", width=240, height=30,
+            fg_color=COLORS["window"], border_width=0, text_color=COLORS["text"], font=("Segoe UI", 12),
         )
         self.library_search.pack(side="left")
         self.library_search.bind("<KeyRelease>", lambda _event: self._library_query())
         ctk.CTkFrame(search_box, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", pady=(4, 0))
 
-        # "All profiles"/"All statuses" live behind one filter icon instead of
-        # two permanently-boxed dropdowns -- a real catalogue already has the
-        # search box, the sort control, and every row's own actions competing
-        # for attention, so a rarely-touched filter pair stays collapsed.
-        self._library_filters_open = False
-        filter_button = self._flat_button(controls, "sliders", self._toggle_library_filters, diameter=32, icon_size=18)
-        self._library_filter_button = filter_button
-        filter_button.frame.pack(side="left", padx=(14, 0))
-
-        popover = ctk.CTkFrame(
-            panel, fg_color=COLORS["surface"], border_width=1, border_color=COLORS["line"], corner_radius=8,
-        )
-        self._library_filter_popover = popover
-        popover_inner = ctk.CTkFrame(popover, fg_color="transparent")
-        popover_inner.pack(padx=12, pady=12)
-        profiles = ["All profiles"] + [profile.display_name for profile in SeparationController.available_profiles()]
-        self.library_profile_filter = ctk.CTkOptionMenu(
-            popover_inner, values=profiles, command=lambda _value: self._library_query(), width=160, height=30,
-            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
-        )
-        self.library_profile_filter.pack(pady=(0, 8))
-        self.library_status_filter = ctk.CTkOptionMenu(
-            popover_inner,
-            values=["All statuses", "Ready", "Processing", "Failed", "Interrupted", "Unavailable"],
-            command=lambda _value: self._library_query(), width=160, height=30,
-            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
-        )
-        self.library_status_filter.pack()
-
         self.library_sort = ctk.CTkOptionMenu(
             controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(),
-            width=100, height=30, fg_color=COLORS["window"], button_color=COLORS["window"],
+            width=110, height=30, fg_color=COLORS["window"], button_color=COLORS["window"],
             button_hover_color=COLORS["field"], text_color=COLORS["muted"], dropdown_fg_color=COLORS["surface"],
+            font=("Segoe UI", 12), dropdown_font=("Segoe UI", 12),
         )
         self.library_sort.pack(side="right")
 
-        ctk.CTkFrame(panel, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", padx=32, pady=(0, 4))
+        ctk.CTkFrame(content, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", padx=32, pady=(0, 4))
 
         self.library_rows = ctk.CTkScrollableFrame(
-            panel, fg_color=COLORS["window"], corner_radius=0
+            content, fg_color=COLORS["window"], corner_radius=0
         )
         self.library_rows.pack(fill="both", expand=True, padx=(32, 20), pady=(0, 20))
         self._autohide_scrollbar(self.library_rows)
+        # Once the catalog replaces the empty-state drop zone, the library
+        # itself has to accept files or drag-and-drop silently stops working.
+        self._register_drop_zone(panel)
 
     def _autohide_scrollbar(self, frame: ctk.CTkScrollableFrame) -> None:
         """Show the scrollbar only once its content actually overflows the view.
@@ -851,29 +848,14 @@ class StemslayerApp:
 
         canvas.configure(yscrollcommand=_on_scroll)
 
-    def _toggle_library_filters(self) -> None:
-        self._library_filters_open = not self._library_filters_open
-        if self._library_filters_open:
-            self._library_filter_popover.place(
-                in_=self._library_filter_button.frame, relx=0, rely=1.0, y=6, anchor="nw",
-            )
-            self._library_filter_popover.lift()
-        else:
-            self._library_filter_popover.place_forget()
-        self._library_filter_button.set_active(self._library_filters_open)
-
     def _library_query(self) -> None:
         if not hasattr(self, "library_controller"):
             return
-        profile_name = self.library_profile_filter.get()
-        profile_id = self._profile_choices.get(profile_name, "all")
-        status = self.library_status_filter.get().lower()
-        status = "all" if status == "all statuses" else status
         sort = {"Newest": "created_at", "Title": "title", "Duration": "duration"}.get(
             self.library_sort.get(), "created_at"
         )
         self.library_controller.set_query(
-            search=self.library_search.get(), profile_id=profile_id, status=status, sort_by=sort
+            search=self.library_search.get(), profile_id="all", status="all", sort_by=sort
         )
 
     def _render_library(self, state: LibraryState) -> None:
@@ -896,11 +878,14 @@ class StemslayerApp:
             child.destroy()
         if has_catalog and not state.tracks:
             ctk.CTkLabel(
-                self.library_rows, text="No songs match these filters.",
-                text_color=COLORS["muted"], font=("Segoe UI", 11),
+                self.library_rows, text="No songs match your search.",
+                text_color=COLORS["muted"], font=("Segoe UI", 12),
             ).pack(pady=36)
+            self._register_drop_zone(self.library_rows)
             return
         profile_names = {profile.profile_id: profile.display_name for profile in SeparationController.available_profiles()}
+        # The profile only earns a place in the row once it tells songs apart.
+        mixed_profiles = len({record.profile_id for record in state.tracks}) > 1
         last_index = len(state.tracks) - 1
         for index, record in enumerate(state.tracks):
             # A flat divided list, not individual bordered cards -- the row
@@ -909,76 +894,65 @@ class StemslayerApp:
             row = ctk.CTkFrame(self.library_rows, fg_color="transparent")
             row.pack(fill="x")
             body = ctk.CTkFrame(row, fg_color="transparent")
-            body.pack(fill="x", padx=4, pady=14)
-            # Pack the interactive controls before the descriptive text so the
-            # fixed-width row-management labels below (title/artist/detail),
-            # which can request more space than a real row has, are what gets
-            # squeezed by Tk's packer on overflow — never Open/Retry/Remove.
-            remove_button = self._library_action_button(
-                body, "trash", lambda track_id=record.track_id: self._remove_library_track(track_id), danger=True,
-            )
-            remove_button.set_enabled(record.status not in {"preparing", "processing"})
-            remove_button.frame.library_action = "remove"
-            remove_button.frame.library_button = remove_button
-            remove_button.frame.pack(side="right", padx=(8, 0))
-            if record.status == "ready":
-                open_button = self._library_action_button(
-                    body, "play", lambda track_id=record.track_id: self._open_library_track(track_id), danger=False,
-                )
-                open_button.frame.library_action = "open"
-                open_button.frame.library_button = open_button
-                open_button.frame.pack(side="right", padx=(8, 0))
-            elif record.status in {"failed", "interrupted", "unavailable"}:
-                retry_button = self._library_action_button(
-                    body, "loop", lambda track_id=record.track_id: self.library_controller.retry(track_id), danger=False,
-                )
-                retry_button.frame.library_action = "retry"
-                retry_button.frame.library_button = retry_button
-                retry_button.frame.pack(side="right", padx=(8, 0))
+            body.pack(fill="x", padx=4, pady=12)
+            # One grid per row: the title column is the only one with weight,
+            # so it alone absorbs overflow from a long title. Artist, detail,
+            # and the action buttons keep their width and stay aligned across
+            # rows instead of drifting with the title's length.
+            body.grid_columnconfigure(1, weight=1)
             color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
             # 10px, not 8: customtkinter's anti-aliased corner rounding reads
             # as a squared-off blob at very small sizes, and a size equal to
             # its own corner_radius*2 is what actually renders as a full circle.
             dot = ctk.CTkFrame(body, width=10, height=10, corner_radius=5, fg_color=color)
             dot.pack_propagate(False)
-            dot.pack(side="left", padx=(2, 10))
-            title = ctk.CTkLabel(
+            dot.grid(row=0, column=0, padx=(2, 12))
+            ctk.CTkLabel(
                 body, text=record.title, text_color=COLORS["text"],
-                font=("Segoe UI", 12, "bold"), anchor="w", width=210,
-            )
-            title.pack(side="left")
+                font=("Segoe UI", 14, "bold"), anchor="w",
+            ).grid(row=0, column=1, sticky="ew")
             artist = record.artist or "Unknown artist"
             ctk.CTkLabel(
-                body, text=artist, text_color=COLORS["muted"], font=("Segoe UI", 10),
-                anchor="w", width=145,
-            ).pack(side="left", padx=(8, 0))
-            detail = (
-                f"{profile_names.get(record.profile_id, record.profile_id)}  ·  "
-                f"{self._track_duration(record)}  ·  BPM {record.bpm or '—'}  ·  "
-                f"Key {record.musical_key or '—'}  ·  {record.genre or '—'}  ·  {self._local_date(record)}"
+                body, text=artist, text_color=COLORS["muted"], font=("Segoe UI", 12),
+                anchor="w", width=170,
+            ).grid(row=0, column=2, sticky="w", padx=(16, 0))
+            detail = library_row_detail(
+                record,
+                profile_name=profile_names.get(record.profile_id, record.profile_id) if mixed_profiles else None,
             )
             ctk.CTkLabel(
-                body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 9),
-                anchor="w", width=235,
-            ).pack(side="left", padx=(8, 0), fill="x", expand=True)
+                body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 12),
+                anchor="w", width=190,
+            ).grid(row=0, column=3, sticky="w", padx=(16, 0))
+            if record.status == "ready":
+                open_button = self._library_action_button(
+                    body, "play", lambda track_id=record.track_id: self._open_library_track(track_id), danger=False,
+                )
+                open_button.frame.library_action = "open"
+                open_button.frame.library_button = open_button
+                open_button.frame.grid(row=0, column=4, padx=(24, 0))
+            elif record.status in {"failed", "interrupted", "unavailable"}:
+                retry_button = self._library_action_button(
+                    body, "loop", lambda track_id=record.track_id: self.library_controller.retry(track_id), danger=False,
+                )
+                retry_button.frame.library_action = "retry"
+                retry_button.frame.library_button = retry_button
+                retry_button.frame.grid(row=0, column=4, padx=(24, 0))
+            remove_button = self._library_action_button(
+                body, "trash", lambda track_id=record.track_id: self._remove_library_track(track_id), danger=True,
+            )
+            remove_button.set_enabled(record.status not in {"preparing", "processing"})
+            remove_button.frame.library_action = "remove"
+            remove_button.frame.library_button = remove_button
+            remove_button.frame.grid(row=0, column=5, padx=(8, 0))
             if record.error_detail:
                 ctk.CTkLabel(
-                    row, text=record.error_detail, text_color=COLORS["muted"], font=("Segoe UI", 9),
+                    row, text=record.error_detail, text_color=COLORS["muted"], font=("Segoe UI", 11),
                     anchor="w", justify="left", wraplength=720,
                 ).pack(fill="x", padx=4, pady=(0, 10))
             if index != last_index:
                 ctk.CTkFrame(self.library_rows, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x")
-
-    @staticmethod
-    def _track_duration(record: TrackRecord) -> str:
-        return format_time(record.duration_seconds).split(".")[0] if record.duration_seconds else "—"
-
-    @staticmethod
-    def _local_date(record: TrackRecord) -> str:
-        try:
-            return datetime.fromisoformat(record.created_at_utc.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
-        except ValueError:
-            return "—"
+        self._register_drop_zone(self.library_rows)
 
     def _validate_library(self) -> None:
         self.history_store.validate_ready()
@@ -1028,9 +1002,15 @@ class StemslayerApp:
             self.controller.set_profile(profile_id)
 
     def _register_drop_zone(self, widget: tk.Widget) -> None:
-        """Register the complete CTk widget tree so every visible drop-zone surface accepts files."""
-        widget.drop_target_register(DND_FILES)
-        widget.dnd_bind("<<Drop>>", self._drop_input)
+        """Register the complete CTk widget tree so every visible drop-zone surface accepts files.
+
+        Safe to call again on a tree that gained children: widgets already
+        registered are skipped, only the new ones are wired.
+        """
+        if not getattr(widget, "stemslayer_drop_registered", False):
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._drop_input)
+            widget.stemslayer_drop_registered = True
         for child in widget.winfo_children():
             self._register_drop_zone(child)
 

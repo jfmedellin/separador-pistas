@@ -5,10 +5,12 @@ from SeparationWorker.engine.mixer import MixSetting, MixerSnapshot
 from SeparationWorker.gui import (
     APP_NAME,
     MixerViewModel,
+    library_row_detail,
     main,
     parse_drop_paths,
     space_toggles_playback,
 )
+from SeparationWorker.history import TrackRecord
 from SeparationWorker.mixer_controller import MixerState
 
 
@@ -165,6 +167,54 @@ class DropPathParsingTests(unittest.TestCase):
 
         self.assertEqual((), parse_drop_paths("", malformed))
         self.assertEqual((), parse_drop_paths("{unterminated", malformed))
+
+
+class LibraryRowDetailTests(unittest.TestCase):
+    """The detail column shows only what the catalog actually knows.
+
+    BPM and musical key are never computed, so a column that printed them
+    read as `BPM —  ·  Key —` on every row. Duration and the local date
+    are the two values every record carries.
+    """
+
+    def make_record(self, **changes):
+        fields = dict(
+            track_id="t1",
+            source_path="C:/music/song.mp3",
+            source_hash=None,
+            title="Song",
+            artist="Artist",
+            genre="Metal",
+            duration_seconds=363.4,
+            bpm=None,
+            musical_key=None,
+            created_at_utc="2026-09-16T12:00:00Z",
+            profile_id="legacy",
+            pipeline_fingerprint="fp",
+            result_directory=Path("results/t1"),
+            status="ready",
+            error_detail=None,
+        )
+        fields.update(changes)
+        return TrackRecord(**fields)
+
+    def test_shows_duration_and_local_date_only(self):
+        detail = library_row_detail(self.make_record())
+
+        self.assertEqual("06:03  ·  2026-09-16", detail)
+        self.assertNotIn("BPM", detail)
+        self.assertNotIn("Key", detail)
+        self.assertNotIn("Metal", detail)
+
+    def test_prefixes_the_profile_name_only_when_asked(self):
+        record = self.make_record()
+
+        self.assertEqual("Legacy  ·  06:03  ·  2026-09-16", library_row_detail(record, profile_name="Legacy"))
+
+    def test_missing_duration_or_unparseable_date_render_as_dashes(self):
+        record = self.make_record(duration_seconds=None, created_at_utc="not-a-date")
+
+        self.assertEqual("—  ·  —", library_row_detail(record))
 
 
 class BrandingTests(unittest.TestCase):
