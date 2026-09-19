@@ -2,7 +2,13 @@ import unittest
 from pathlib import Path
 
 from SeparationWorker.engine.mixer import MixSetting, MixerSnapshot
-from SeparationWorker.gui import APP_NAME, MixerViewModel, main, parse_drop_paths
+from SeparationWorker.gui import (
+    APP_NAME,
+    MixerViewModel,
+    main,
+    parse_drop_paths,
+    space_toggles_playback,
+)
 from SeparationWorker.mixer_controller import MixerState
 
 
@@ -164,6 +170,20 @@ class DropPathParsingTests(unittest.TestCase):
 class BrandingTests(unittest.TestCase):
     def test_uses_the_approved_product_name(self):
         self.assertEqual("Stemslayer", APP_NAME)
+
+
+class SpacebarTransportGuardTests(unittest.TestCase):
+    def test_allows_when_view_is_mixer_and_can_play_is_true(self):
+        self.assertTrue(space_toggles_playback("mixer", True))
+
+    def test_denies_when_can_play_is_false(self):
+        self.assertFalse(space_toggles_playback("mixer", False))
+
+    def test_denies_when_view_is_not_mixer(self):
+        self.assertFalse(space_toggles_playback("separation", True))
+
+    def test_denies_when_view_is_not_mixer_and_cannot_play(self):
+        self.assertFalse(space_toggles_playback("separation", False))
 
 
 if __name__ == "__main__":
