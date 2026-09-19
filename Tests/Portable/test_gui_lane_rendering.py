@@ -5,6 +5,7 @@ rebuilt from the published layout rather than trusting the headless view
 model alone. They skip themselves when no display is available.
 """
 
+import gc
 import tkinter as tk
 import unittest
 from dataclasses import replace
@@ -109,6 +110,13 @@ class GuiAppFixture:
                 pass
         cls.app = None
         cls.root = None
+        # Collect the app's tk.Variable objects here, on the main thread.
+        # Left to a later cycle, their __del__ (a Tcl call) would run on
+        # whichever thread happens to trigger the collector -- a JobManager
+        # worker in test_history, for one -- and tkinter refuses Tcl calls
+        # from a non-main thread ("main thread is not in main loop"),
+        # deadlocking that worker against a test that waits on it.
+        gc.collect()
 
     def setUp(self):
         # The same call StemslayerApp makes when it first builds the strip.

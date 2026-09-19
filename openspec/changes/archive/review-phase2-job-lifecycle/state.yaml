@@ -1,0 +1,57 @@
+change: review-phase2-job-lifecycle
+project: separador-pistas
+artifact_store: hybrid
+execution_mode: auto
+delivery_strategy: auto-chain
+chain_strategy: stacked-to-main
+review_budget_lines: 800
+source: PROJECT_REVIEW_2026-08-30.md (delivery-sequence Phase 2: ARC-03, ARC-04, dead-runtime removal)
+phases:
+  explore: done
+  proposal: done
+  spec: done
+  design: done
+  tasks: done
+  apply: done (A+B+C all committed 2026-09-04; C.7/C.8 need a real portable build, not source-verifiable)
+  verify: done (PASS, 0 CRITICAL, 0 blocking WARNING, after 3 passes -- 2 real bugs found and fixed, not just test gaps: 1b64057, a26d47a)
+  archive: done (moved to openspec/changes/archive/, job-lifecycle spec promoted to openspec/specs/)
+
+paused_at: 2026-09-04
+branch: fix/review-phase1-correctness-security (continuing on the same local branch; not pushed)
+predecessor: review-phase1-correctness-security (SEC-01/ARC-01/ARC-02, 3 commits, committed)
+commits:
+  - cba1a78 fix: remove dormant runtime supervisor package (ARC-04)
+  - c6ff9bc fix: bounded, cancellable job lifecycle via owned subprocesses (ARC-03)
+  - e40ba11 fix: cancel UI, queued label, and bounded close-drain (ARC-03 surface)
+resume_with: |
+  All three phases implemented and independently re-verified by the orchestrator (test counts
+  re-run against .venv-portable, not just trusted from sub-agent reports):
+    - Phase A (ARC-04): runtime/ package + its test deleted after C.1's 3-check safety gate
+      all passed clean. 394/394 tests.
+    - Phase B (ARC-03 core): SeparationWorker/job_manager.py (JobManager/JobHandle/JobCancelled/
+      run_owned/current_job, Win32 job-object tree-kill via ctypes with silent fallback).
+      Both demucs_adapter.run_demucs and guitar_adapter.run_specialist swapped to run_owned.
+      SplitLibraryController gained cancel()/shutdown()/queued_track_ids. D7's guarantee (cancel
+      raises JobCancelled, never CalledProcessError, so the CUDA->CPU fallback never re-triggers)
+      verified at two levels: an injected-runner test AND a real-subprocess-gets-killed test.
+      412/412 tests. This apply run was interrupted once by a session rate limit mid-Phase-B;
+      resumed by inspecting the working tree directly rather than restarting the sub-agent.
+    - Phase C (ARC-03 surface): per-row Cancel button + confirm dialog, derived "Queued" label
+      (no schema change), _close() confirms once then calls controller.shutdown(deadline=8.0)
+      before root.destroy(). 414/414 tests.
+
+  Apply-time verification C.4 and C.6 done (C.4 actually executed --self-test in dev venv,
+  exit 0; C.6 cited from Phase B's existing diagnostic-tail regression test). C.5 is
+  source-confirmed only. **C.7 and C.8 explicitly require a real built portable EXE + Task
+  Manager observation (tree-kill of --jobs>0 children, and the Win32 job-object fallback path)
+  -- these cannot be verified from a dev shell and are left unchecked in tasks.md, not
+  fabricated.** A human must run these against a real `Tools/build_portable.ps1` build before
+  treating PR #3 as fully verified, same caveat Phase 1's C.1/C.2 had for --repo.
+
+  To resume:
+    1. Run sdd-verify against the full change (spec/design/tasks vs. implementation).
+    2. Get a human to run C.7/C.8 against a real portable build.
+    3. Decide whether to push this branch (now 5 commits total across Phase 1 + Phase 2) / open
+       PRs, or keep it local.
+    4. All artifacts mirrored in Engram under sdd/review-phase2-job-lifecycle/* and in this repo
+       under openspec/changes/review-phase2-job-lifecycle/.

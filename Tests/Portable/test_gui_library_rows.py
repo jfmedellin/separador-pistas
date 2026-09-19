@@ -12,17 +12,23 @@ tagged on their frame with a `library_action` marker so a test can find
 They skip themselves when no display is available.
 """
 
+import gc
 import os
+import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from SeparationWorker.engine.pcm import PlanarPCM
 from SeparationWorker.engine.stem_profile import LEGACY_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.engine.wav import encode_float32_wav
 from SeparationWorker.history import HistoryStore
+from SeparationWorker.job_manager import JobCancelled, current_job
 
 try:
     import customtkinter as ctk
@@ -104,6 +110,13 @@ class LibraryRowFixture(unittest.TestCase):
                 pass
         cls.app = None
         cls.root = None
+        # Collect the app's tk.Variable objects here, on the main thread.
+        # Left to a later cycle, their __del__ (a Tcl call) would run on
+        # whichever thread happens to trigger the collector -- a JobManager
+        # worker in test_history, for one -- and tkinter refuses Tcl calls
+        # from a non-main thread ("main thread is not in main loop"),
+        # deadlocking that worker against a test that waits on it.
+        gc.collect()
         cls._restore_localappdata()
 
     def setUp(self):
@@ -316,6 +329,188 @@ class ReadyRowRemoveTests(LibraryRowFixture):
         body = self.render_and_find_row()
         remove_button = self.find_action_button(body, "remove")
         self.assertFalse(remove_button.is_enabled())
+
+
+class CloseDrainTests(LibraryRowFixture):
+    """Regression for the design's "Close while jobs are queued" sequence:
+    _close() must drain (cancel + join, bounded by JobManager.shutdown's
+    deadline) before root.destroy() fires, and no owned child process may
+    survive past that bounded deadline. Must fail on current master, where
+    _close() destroys the window immediately with no drain at all.
+    """
+
+    def test_close_kills_the_running_child_process_and_destroys_only_after_the_drain_completes(self):
+        started = threading.Event()
+        process_holder: dict = {}
+
+        def blocking_separate(input_path, result_directory, *, profile, on_progress, cancellation, **_extra):
+            handle = current_job()
+            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            process_holder["process"] = process
+            handle.register(process)
+            started.set()
+            try:
+                process.wait()
+            finally:
+                handle.unregister(process)
+            if cancellation is not None and cancellation.cancelled:
+                raise JobCancelled("job cancelled mid separation")
+            write_stems(Path(result_directory))
+            return Path(result_directory)
+
+        self.app.library_controller._separate = blocking_separate
+        source = Path(self.temp.name) / "blocking.wav"
+        source.write_bytes(b"fake-source-audio")
+        self.app.library_controller.add(source, LEGACY_PROFILE.profile_id)
+        self.assertTrue(started.wait(timeout=5), "the blocking job never started its child process")
+
+        order = []
+        original_shutdown = self.app.library_controller.shutdown
+        original_destroy = self.root.destroy
+
+        def spy_shutdown(*args, **kwargs):
+            order.append("shutdown_start")
+            result = original_shutdown(*args, **kwargs)
+            order.append("shutdown_end")
+            return result
+
+        def spy_destroy(*args, **kwargs):
+            order.append("destroy")
+            return original_destroy(*args, **kwargs)
+
+        self.app.library_controller.shutdown = spy_shutdown
+        self.root.destroy = spy_destroy
+
+        with mock.patch("SeparationWorker.gui.messagebox.askyesno", return_value=True) as confirm:
+            self.app._close()
+
+        confirm.assert_called_once()
+        self.assertEqual(
+            ["shutdown_start", "shutdown_end", "destroy"], order,
+            "root.destroy() must fire only after the drain completes, never before",
+        )
+        process = process_holder.get("process")
+        self.assertIsNotNone(process, "the blocking job never registered its child process")
+        self.assertIsNotNone(
+            process.poll(), "no child process may survive close (bounded by JobManager.shutdown's deadline)"
+        )
+
+
+class CloseConfirmationDeclinedTests(LibraryRowFixture):
+    """D11: a declined close-confirmation must leave the app open and running."""
+
+    def test_declined_confirmation_leaves_closed_false_and_the_job_running(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_separate(input_path, result_directory, *, profile, on_progress, cancellation, **_extra):
+            entered.set()
+            if not release.wait(timeout=10):
+                raise RuntimeError("timed out waiting to be released")
+            write_stems(Path(result_directory))
+            return Path(result_directory)
+
+        self.app.library_controller._separate = slow_separate
+        source = Path(self.temp.name) / "declined.wav"
+        source.write_bytes(b"fake-source-audio")
+        record = self.app.library_controller.add(source, LEGACY_PROFILE.profile_id)
+        self.assertTrue(entered.wait(timeout=5), "the slow job never started")
+
+        with mock.patch("SeparationWorker.gui.messagebox.askyesno", return_value=False) as confirm:
+            self.app._close()
+            confirm.assert_called_once()
+
+        self.assertFalse(self.app._closed, "a declined confirmation must leave _closed False")
+        self.assertTrue(self.root.winfo_exists(), "a declined confirmation must not destroy the window")
+
+        release.set()
+        self.pump_until(lambda: self.app.history_store.get(record.track_id).status == "ready")
+
+
+class QueuedLabelRenderTests(LibraryRowFixture):
+    """CRITICAL gap (verify-report): no test exercised the derived "Queued"
+    label render path in gui.py's _render_library, fed by
+    SplitLibraryController.state.queued_track_ids. Uses the real
+    StemslayerApp, a real Tk root, and real background threads -- only the
+    subprocess-launch boundary (`_separate`) is faked, exactly like
+    CloseDrainTests/CloseConfirmationDeclinedTests above.
+    """
+
+    def test_queued_row_renders_the_queued_label_while_its_status_stays_preparing(self):
+        # Every staged input copy is renamed to "source<ext>" (ARC-02's
+        # immutable-copy staging), so jobs are distinguished by call order,
+        # not by the input path's name.
+        entered = [threading.Event() for _ in range(3)]
+        release = [threading.Event() for _ in range(3)]
+        started: list[int] = []
+
+        def blocking_separate(input_path, result_directory, *, profile, on_progress, cancellation, **_extra):
+            index = len(started)
+            started.append(index)
+            entered[index].set()
+            if not release[index].wait(timeout=10):
+                raise RuntimeError(f"timed out waiting to release job {index}")
+            write_stems(Path(result_directory))
+            return Path(result_directory)
+
+        self.app.library_controller._separate = blocking_separate
+
+        def add_source(name):
+            path = Path(self.temp.name) / f"{name}.wav"
+            path.write_bytes(f"audio-{name}".encode())
+            return self.app.library_controller.add(path, LEGACY_PROFILE.profile_id)
+
+        running = add_source("running")
+        self.assertTrue(entered[0].wait(timeout=5), "the running job never started")
+
+        add_source("queued-0")
+        third = add_source("queued-1")
+
+        # queued-1 is already reported the moment it is submitted (D4 fires
+        # on_queue_change on every submit, not only on promotion). Release
+        # the running job anyway so queued-0 starts and queued-1 becomes the
+        # sole remaining queued row -- that is the row that must render
+        # "Queued" once the label has to reflect an actual state change, not
+        # just its initial submit-time snapshot.
+        release[0].set()
+        self.assertTrue(entered[1].wait(timeout=5), "queued-0 was never promoted")
+
+        self.pump_until(
+            lambda: third.track_id in self.app.library_controller.state.queued_track_ids,
+            timeout=5.0,
+        )
+
+        preparing = self.app.history_store.get(third.track_id)
+        self.assertEqual("preparing", preparing.status)
+
+        self.app._show_view("separation")
+        self.root.update_idletasks()
+        self.root.update()
+
+        # _render_library packs a hairline divider frame as a bare sibling
+        # between rows (no nested body), so only frames with children are
+        # actual rows.
+        rows = [row for row in self.app.library_rows.winfo_children() if row.winfo_children()]
+        target_body = None
+        for row in rows:
+            body = row.winfo_children()[0]
+            titles = [
+                child.cget("text") for child in body.winfo_children() if isinstance(child, ctk.CTkLabel)
+            ]
+            if third.title in titles:
+                target_body = body
+                break
+        self.assertIsNotNone(target_body, "could not find the queued row by title")
+
+        labels = [
+            child.cget("text") for child in target_body.winfo_children() if isinstance(child, ctk.CTkLabel)
+        ]
+        self.assertIn("Queued", labels, "a queued row must render the derived Queued label")
+
+        release[1].set()
+        release[2].set()
+        self.pump_until(lambda: self.app.history_store.get(running.track_id).status == "ready")
+        self.pump_until(lambda: self.app.history_store.get(third.track_id).status == "ready")
 
 
 if __name__ == "__main__":

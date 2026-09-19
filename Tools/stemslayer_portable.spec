@@ -1,6 +1,9 @@
 # PyInstaller one-folder build for the Windows x64 portable release.
 # The release environment installs the CPU-only PyTorch wheel before invoking
-# this spec. No model weights are collected; Demucs downloads htdemucs on use.
+# this spec. No model weights are collected here: SEC-01's app-owned
+# SeparationWorker.model_manager verifies and downloads them at first use
+# into a per-model app-owned cache directory, never through Demucs' own
+# on-use download or torch.hub (see SeparationWorker/model_manager.py).
 
 from pathlib import Path
 
@@ -44,6 +47,12 @@ hiddenimports = [
 # These packages contain runtime Python modules and/or data that static
 # analysis cannot reliably discover (Demucs model definitions, Mutagen format
 # handlers, CustomTkinter assets, and TkDND's Tcl scripts/native extension).
+# `collect_all("demucs")` already sweeps every non-.py data file under the
+# installed `demucs` package with no `excludes`, which includes
+# `demucs/remote/*.yaml` (verified at apply time: both `htdemucs.yaml` and
+# `htdemucs_6s.yaml` are present in the collected datas). SEC-01's
+# `model_manager` copies these bundled bag descriptors from that same
+# installed location (D7), so no separate `datas` entry is needed for them.
 for package in ("demucs", "customtkinter", "mutagen"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas.extend(package_datas)

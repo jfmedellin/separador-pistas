@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import shutil
 import sqlite3
 import threading
@@ -15,9 +14,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
-from SeparationWorker.demucs_adapter import separate_audio
+from SeparationWorker.demucs_adapter import DemucsSeparationError, separate_audio
+from SeparationWorker.engine.publication import PublicationError
 from SeparationWorker.engine.stem_profile import StemProfile, resolve_profile
 from SeparationWorker.engine.stem_session import StemSession
+from SeparationWorker.job_manager import JobCancelled, JobHandle, JobManager
+from SeparationWorker.paths import local_data_root
+
+
+# D12: cancelled rows reuse the existing `interrupted` status with a detail
+# distinct from other interrupted causes, matching the `f"{cause} {recovery}"`
+# shape the generic failure path already produces at `update(... error_detail=)`.
+_CANCELLED_ERROR_DETAIL = (
+    "job.cancelled Separation was cancelled; no partial result was kept. "
+    "Retry from the original audio."
+)
 
 
 TrackStatus = Literal[
@@ -30,13 +41,6 @@ STATUSES: tuple[TrackStatus, ...] = (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def local_data_root() -> Path:
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        return Path(base) / "Stemslayer"
-    return Path.home() / "AppData" / "Local" / "Stemslayer"
 
 
 def source_sha256(path: str | Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -448,6 +452,7 @@ class HistoryStore:
             return False
         if record.status in {"preparing", "processing"}:
             return False
+        self.discard_input_copy(track_id)
         if release is not None:
             release(record)
         try:
@@ -460,6 +465,45 @@ class HistoryStore:
             return False
         return self.delete_catalog_entry(track_id)
 
+    def discard_input_copy(self, track_id: str) -> None:
+        """Best-effort removal of the ARC-02 immutable input copy for `track_id`.
+
+        Called once a job reaches a terminal state (`ready`/`failed`) and
+        from `remove()`. A leftover copy is inert to an older build (see
+        Migration/Rollout), so filesystem failures here are swallowed
+        instead of surfaced as a job-affecting error.
+        """
+        directory = local_data_root() / "inputs" / track_id
+        if not directory.exists():
+            return
+        try:
+            shutil.rmtree(directory)
+        except OSError:
+            pass
+
+    def purge_input_copies(self) -> int:
+        """Remove leftover `inputs/*` directories not tied to an active job.
+
+        Meant to run once at startup, after `recover_unfinished()` has
+        already retired any `preparing`/`processing` rows to `interrupted`.
+        """
+        inputs_root = local_data_root() / "inputs"
+        if not inputs_root.exists():
+            return 0
+        active_ids = {
+            record.track_id for record in self.query() if record.status in {"preparing", "processing"}
+        }
+        removed = 0
+        for entry in inputs_root.iterdir():
+            if not entry.is_dir() or entry.name in active_ids:
+                continue
+            try:
+                shutil.rmtree(entry)
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
 
 @dataclass(frozen=True)
 class LibraryState:
@@ -469,6 +513,7 @@ class LibraryState:
     status: str | None = None
     sort_by: str = "created_at"
     descending: bool = True
+    queued_track_ids: tuple[str, ...] = ()
 
 
 def _start_thread(target: Callable[[], None]) -> None:
@@ -489,6 +534,7 @@ class SplitLibraryController:
         dispatch: Callable[[Callable[[], None]], None] = lambda callback: callback(),
         on_change: Callable[[LibraryState], None] = lambda _state: None,
         on_success: Callable[[TrackRecord], None] = lambda _record: None,
+        on_model_progress: Callable[[str, int, int], None] = lambda *_args: None,
     ):
         self.store = store
         self._separate = separate
@@ -498,8 +544,35 @@ class SplitLibraryController:
         self._dispatch = dispatch
         self._on_change = on_change
         self._on_success = on_success
+        self._on_model_progress = on_model_progress
+        self._manager = JobManager(start_worker=start_worker, on_queue_change=self._queue_changed)
         self.state = LibraryState()
         self.refresh()
+
+    def _queue_changed(self, queued_ids: tuple[str, ...]) -> None:
+        """Forward JobManager's FIFO position onto the GUI thread (D4).
+
+        Fires on whatever thread just started or finished a job, exactly the
+        pattern `_relay_model_progress` established for `on_model_progress`,
+        so it is always marshalled through `self._dispatch`. No DB query: the
+        derived "Queued" label is a property of `LibraryState`, not the store.
+        """
+        self._dispatch(lambda: self._set_queued_ids(queued_ids))
+
+    def _set_queued_ids(self, queued_ids: tuple[str, ...]) -> None:
+        self.state = replace(self.state, queued_track_ids=queued_ids)
+        self._on_change(self.state)
+
+    def _relay_model_progress(self, file_name: str, done: int, total: int) -> None:
+        """Forward SEC-01's download-progress events onto the GUI thread.
+
+        `model_manager.ensure_model()` calls its `on_progress` callback
+        synchronously from this background worker thread (`_start_worker`),
+        so it must never touch GUI state directly; every event is routed
+        through `self._dispatch`, the same queue `on_change`/`on_success`
+        already use to reach the GUI thread safely.
+        """
+        self._dispatch(lambda: self._on_model_progress(file_name, done, total))
 
     def refresh(self) -> LibraryState:
         self.state = replace(
@@ -538,7 +611,7 @@ class SplitLibraryController:
             raise ValueError(f"{profile.display_name} is not available")
         record = self.store.create(source_path, profile)
         self.refresh()
-        self._start_worker(lambda: self._prepare(record.track_id, profile))
+        self._manager.submit(record.track_id, lambda handle: self._prepare(handle, profile))
         return record
 
     def retry(self, track_id: str) -> bool:
@@ -553,17 +626,57 @@ class SplitLibraryController:
             return False
         self.store.update(track_id, status="preparing", error_detail=None)
         self.refresh()
-        self._start_worker(lambda: self._prepare(track_id, profile))
+        self._manager.submit(track_id, lambda handle: self._prepare(handle, profile))
         return True
 
-    def _prepare(self, track_id: str, profile: StemProfile) -> None:
+    def cancel(self, track_id: str) -> bool:
+        """Cancel a queued or running job (D11's confirmation is the caller's job).
+
+        A queued job never started a subprocess and never runs `_prepare`, so
+        it must be retired here; a running job's own `_prepare` unwind
+        (`except JobCancelled` / cancelled `PublicationError`) retires itself.
+        """
+        outcome = self._manager.cancel(track_id)
+        if outcome == "queued":
+            current = self.store.get(track_id)
+            if current is not None and current.status in {"preparing", "processing"}:
+                self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+            self._dispatch(self.refresh)
+        return outcome is not None
+
+    def shutdown(self, *, deadline: float = 8.0) -> bool:
+        """Cancel the running job and drain every queued job (D10, D11).
+
+        Queued jobs never start a subprocess, so they are retired here before
+        the bounded manager-level drain; the running job's own `_prepare`
+        unwind retires it once cancellation actually reaches it.
+        """
+        queued_ids = self._manager.queued_ids()
+        for track_id in queued_ids:
+            current = self.store.get(track_id)
+            if current is not None and current.status in {"preparing", "processing"}:
+                self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+        joined = self._manager.shutdown(deadline=deadline)
+        self._dispatch(self.refresh)
+        return joined
+
+    def _prepare(self, handle: JobHandle, profile: StemProfile) -> None:
+        track_id = handle.job_id
         record = self.store.get(track_id)
         if record is None:
             return
+        original_track_id = track_id
         try:
             requested_source = record.source_path
+            # Metadata (title/artist/genre/duration) is cosmetic, not part of
+            # job identity, so it is read from the original path -- reading
+            # it from the renamed copy would lose the original filename as
+            # the title fallback for untagged files. Hashing and separation
+            # below MUST use the immutable copy (source-identity-immutability
+            # spec); metadata reading is intentionally out of that scope.
             metadata = self._metadata_reader(requested_source)
-            digest = self._hash_source(requested_source)
+            staged_input = self._stage_input_copy(original_track_id, requested_source)
+            digest = self._hash_source(staged_input)
             owner = self.store.claim_identity(track_id, digest, profile.pipeline_fingerprint)
             if owner.track_id != track_id:
                 if not self.store.discard_duplicate_candidate(track_id):
@@ -591,12 +704,37 @@ class SplitLibraryController:
             )
             self._dispatch(self.refresh)
             self._discard_invalid_managed_result(record, profile)
-            result = Path(self._separate(record.source_path, record.result_directory, profile=profile))
+            result = Path(
+                self._separate(
+                    staged_input,
+                    record.result_directory,
+                    profile=profile,
+                    on_progress=self._relay_model_progress,
+                    cancellation=handle.token,
+                )
+            )
             if result.resolve() != record.result_directory.resolve():
                 raise RuntimeError("Separation published outside the managed library directory")
             session = StemSession.load(result, profile=profile)
             duration = record.duration_seconds or session.duration_seconds
             self.store.update(track_id, status="ready", duration_seconds=duration, error_detail=None)
+        except JobCancelled:
+            current = self.store.get(track_id)
+            if current is not None:
+                self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+            self._dispatch(self.refresh)
+            return
+        except PublicationError as error:
+            current = self.store.get(track_id)
+            if current is not None:
+                if error.code == "publication.cancelled":
+                    self.store.update(track_id, status="interrupted", error_detail=_CANCELLED_ERROR_DETAIL)
+                else:
+                    cause = getattr(error, "cause", str(error))
+                    recovery = getattr(error, "recovery", "Retry from the original audio.")
+                    self.store.update(track_id, status="failed", error_detail=f"{cause} {recovery}".strip())
+            self._dispatch(self.refresh)
+            return
         except Exception as error:
             current = self.store.get(track_id)
             if current is not None:
@@ -605,7 +743,31 @@ class SplitLibraryController:
                 self.store.update(track_id, status="failed", error_detail=f"{cause} {recovery}".strip())
             self._dispatch(self.refresh)
             return
+        finally:
+            # Fires on every exit from this method once the job has a track
+            # id to clean up under -- success, failure, and the early-return
+            # duplicate-identity paths above all leave the copy orphaned
+            # otherwise (ARC-02 terminal-state cleanup).
+            self.store.discard_input_copy(original_track_id)
         self._dispatch(lambda: self._finish_success(track_id))
+
+    @staticmethod
+    def _stage_input_copy(track_id: str, source_path: str | Path) -> Path:
+        """Copy the source file into an immutable, job-owned location before hashing (ARC-02)."""
+        directory = local_data_root() / "inputs" / track_id
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        staged = directory / f"source{Path(source_path).suffix}"
+        try:
+            shutil.copyfile(source_path, staged)
+        except OSError as error:
+            raise DemucsSeparationError(
+                "input.copy_failed",
+                f"Could not stage the source file for separation: {error}.",
+                "Retry from the original audio.",
+            ) from error
+        return staged
 
     def _discard_invalid_managed_result(self, record: TrackRecord, profile: StemProfile) -> None:
         """Clear only an invalid track-owned result so a retry can publish atomically."""

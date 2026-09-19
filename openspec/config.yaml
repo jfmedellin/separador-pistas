@@ -1,0 +1,42 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.14, CustomTkinter GUI, Demucs 4.1.0 (audio separation),
+  SQLite-backed HistoryStore/SplitLibraryController, PyInstaller portable
+  Windows builds.
+  Architecture: SeparationWorker/gui.py (CustomTkinter shell + StemslayerApp),
+  SeparationWorker/history.py (SQLite repository + job orchestration),
+  SeparationWorker/demucs_adapter.py (subprocess-driven Demucs invocation),
+  SeparationWorker/engine/ (profile/manifest/publication primitives).
+  Testing: stdlib unittest via `python -m unittest discover -s Tests\Portable -v`.
+  No pytest, coverage, linter, or type checker configured.
+  Style: argv-list subprocess calls (no shell=True), parameterized SQL,
+  atomic staged-directory publication, explicit profile/manifest contracts.
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Cite exact file:line evidence for every claimed defect
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Follow the existing HistoryStore SCHEMA_VERSION/PRAGMA user_version migration pattern for schema changes
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Budget new regression tests for every defect fixed (none exist today for SEC-01/ARC-01/ARC-02)
+  apply:
+    guidelines:
+      - Follow existing code patterns
+      - No shell=True, no new runtime dependency unless explicitly justified in design.md
+    tdd: false
+    test_command: "python -m unittest discover -s Tests\\Portable -v"
+  verify:
+    test_command: "python -m unittest discover -s Tests\\Portable -v"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

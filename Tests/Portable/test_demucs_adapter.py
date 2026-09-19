@@ -20,6 +20,8 @@ from SeparationWorker.demucs_adapter import (
     run_demucs,
     separate_audio,
 )
+from SeparationWorker import model_manager
+from SeparationWorker.model_manager import ModelAcquisitionError
 from SeparationWorker.engine.publication import PublicationError
 from SeparationWorker.engine.role_metrics import RoleThresholds
 from SeparationWorker.engine.stem_cache import cache_key
@@ -35,6 +37,25 @@ SAMPLE_RATE = 44100
 THRESHOLDS_PATH = (
     Path(__file__).resolve().parents[2] / "Compliance" / "evidence" / "metal-guitar" / "thresholds.json"
 )
+FAKE_REPO_DIR = Path("fake-verified-model-repo")
+
+# SEC-01: separate_audio() now calls model_manager.ensure_model() before every
+# run. None of the tests in this module exercise model acquisition itself
+# (that lives in test_model_manager.py), so acquisition is stubbed out for
+# the whole module -- otherwise every test here would attempt a real network
+# download the first time it runs.
+_ensure_model_patcher = patch(
+    "SeparationWorker.demucs_adapter.model_manager.ensure_model",
+    return_value=FAKE_REPO_DIR,
+)
+
+
+def setUpModule():
+    _ensure_model_patcher.start()
+
+
+def tearDownModule():
+    _ensure_model_patcher.stop()
 
 
 class FakeDemucs:
@@ -109,11 +130,12 @@ class DemucsAdapterTests(unittest.TestCase):
     def test_development_command_runs_demucs_as_a_python_module(self):
         with patch("SeparationWorker.demucs_adapter.sys.frozen", False, create=True):
             with patch("SeparationWorker.demucs_adapter.os.cpu_count", return_value=16):
-                command = _command(Path("song.mp3"), Path("staging"), "cpu")
+                command = _command(Path("song.mp3"), Path("staging"), "cpu", repo=FAKE_REPO_DIR)
 
         self.assertEqual([sys.executable, "-m", "demucs.separate"], command[:3])
         self.assertEqual("2", command[command.index("--jobs") + 1])
         self.assertEqual("0.1", command[command.index("--overlap") + 1])
+        self.assertEqual(str(FAKE_REPO_DIR), command[command.index("--repo") + 1])
 
     def test_cpu_tuning_applies_to_every_profile_not_only_the_legacy_one(self):
         """The model comes from the profile; the CPU tuning must not follow it.
@@ -123,7 +145,7 @@ class DemucsAdapterTests(unittest.TestCase):
         """
         with patch("SeparationWorker.demucs_adapter.sys.frozen", False, create=True):
             with patch("SeparationWorker.demucs_adapter.os.cpu_count", return_value=16):
-                command = _command(Path("song.mp3"), Path("staging"), "cpu", METAL_PROFILE)
+                command = _command(Path("song.mp3"), Path("staging"), "cpu", METAL_PROFILE, repo=FAKE_REPO_DIR)
 
         self.assertEqual(METAL_PROFILE.primary_model, command[command.index("--name") + 1])
         self.assertNotEqual(MODEL_NAME, METAL_PROFILE.primary_model)
@@ -132,7 +154,7 @@ class DemucsAdapterTests(unittest.TestCase):
 
     def test_cuda_command_keeps_demucs_quality_defaults(self):
         with patch("SeparationWorker.demucs_adapter.sys.frozen", False, create=True):
-            command = _command(Path("song.mp3"), Path("staging"), "cuda")
+            command = _command(Path("song.mp3"), Path("staging"), "cuda", repo=FAKE_REPO_DIR)
 
         self.assertNotIn("--jobs", command)
         self.assertNotIn("--overlap", command)
@@ -145,7 +167,7 @@ class DemucsAdapterTests(unittest.TestCase):
             worker.write_bytes(b"worker")
             with patch("SeparationWorker.demucs_adapter.sys.executable", str(gui)):
                 with patch("SeparationWorker.demucs_adapter.sys.frozen", True, create=True):
-                    command = _command(Path("song.mp3"), Path("staging"), "cpu")
+                    command = _command(Path("song.mp3"), Path("staging"), "cpu", repo=FAKE_REPO_DIR)
 
         self.assertEqual(str(worker.resolve()), command[0])
         self.assertEqual(MODEL_NAME, command[command.index("--name") + 1])
@@ -160,7 +182,7 @@ class DemucsAdapterTests(unittest.TestCase):
             with patch("SeparationWorker.demucs_adapter.sys.executable", str(gui)):
                 with patch("SeparationWorker.demucs_adapter.sys.frozen", True, create=True):
                     with self.assertRaises(DemucsSeparationError) as caught:
-                        _command(Path("song.mp3"), Path("staging"), "cpu")
+                        _command(Path("song.mp3"), Path("staging"), "cpu", repo=FAKE_REPO_DIR)
 
         self.assertEqual("demucs.worker_missing", caught.exception.code)
 
@@ -178,6 +200,7 @@ class DemucsAdapterTests(unittest.TestCase):
             self.assertEqual(sys.executable, command[0])
             self.assertEqual("demucs.separate", command[2])
             self.assertEqual(MODEL_NAME, command[command.index("--name") + 1])
+            self.assertEqual(str(FAKE_REPO_DIR), command[command.index("--repo") + 1])
             self.assertEqual("cuda", command[command.index("--device") + 1])
             self.assertEqual([], list(output.parent.glob(".song-stems.staging-*")))
 
@@ -311,6 +334,85 @@ class DemucsAdapterTests(unittest.TestCase):
             self.assertEqual("input.not_file", caught.exception.code)
             self.assertEqual([], runner.commands)
             self.assertFalse(output.parent.exists())
+
+    def test_model_acquisition_is_requested_for_the_profiles_primary_model(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            runner = FakeDemucs()
+            progress = lambda *args: None  # noqa: E731
+
+            separate_audio(audio_file, output, runner=runner, cuda_probe=lambda: True, on_progress=progress)
+
+            model_manager.ensure_model.assert_called_with(MODEL_NAME, on_progress=progress)
+
+    def test_model_acquisition_failure_is_reraised_as_a_demucs_separation_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+            runner = FakeDemucs()
+            failure = ModelAcquisitionError(
+                "model.hash_mismatch", "tampered bytes", "retry acquisition"
+            )
+
+            with patch(
+                "SeparationWorker.demucs_adapter.model_manager.ensure_model", side_effect=failure
+            ):
+                with self.assertRaises(DemucsSeparationError) as caught:
+                    separate_audio(audio_file, output, runner=runner, cuda_probe=lambda: True)
+
+            self.assertEqual("model.hash_mismatch", caught.exception.code)
+            self.assertEqual([], runner.commands)
+            self.assertFalse(output.exists())
+
+
+class RunOwnedRegressionTests(unittest.TestCase):
+    """D7/D9: a cancelled job must never resurrect the CUDA->CPU fallback,
+    and the Popen swap behind run_demucs must not disturb diagnostics."""
+
+    def make_paths(self, root, name="song.mix.mp3"):
+        audio_file = Path(root) / name
+        audio_file.write_bytes(b"audio")
+        return audio_file, Path(root) / "exports" / "song-stems"
+
+    def test_job_cancelled_during_cuda_attempt_never_triggers_the_cpu_fallback(self):
+        from SeparationWorker.job_manager import JobCancelled
+
+        calls = {"cuda": 0, "cpu": 0}
+
+        def runner(command):
+            device = command[command.index("--device") + 1]
+            calls[device] += 1
+            if device == "cuda":
+                raise JobCancelled("job cancelled mid CUDA attempt")
+            raise AssertionError("the CPU fallback must never run after a cancellation")
+
+        with tempfile.TemporaryDirectory() as root:
+            audio_file, output = self.make_paths(root)
+
+            with self.assertRaises(JobCancelled):
+                separate_audio(audio_file, output, runner=runner, cuda_probe=lambda: True)
+
+            self.assertEqual(1, calls["cuda"])
+            self.assertEqual(0, calls["cpu"])
+            self.assertFalse(output.exists())
+
+    def test_called_process_error_output_survives_the_popen_swap_for_diagnostics(self):
+        from SeparationWorker.demucs_adapter import _diagnostic_tail, _failure_cause
+
+        command = [
+            sys.executable,
+            "-c",
+            "import sys; print('boom line one'); print('boom line two'); sys.exit(9)",
+        ]
+        with patch("SeparationWorker.demucs_adapter._require_demucs_41"):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                run_demucs(command)
+
+        error = caught.exception
+        self.assertEqual(9, error.returncode)
+        tail = _diagnostic_tail(error)
+        self.assertIn("boom line one", tail)
+        self.assertIn("boom line two", tail)
+        self.assertIn("CPU exited with code 9", _failure_cause("CPU", error))
 
 
 class DemucsCliTests(unittest.TestCase):

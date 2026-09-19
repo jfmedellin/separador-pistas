@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -22,6 +22,7 @@ from SeparationWorker.engine.stem_profile import LEGACY_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.gui_controller import GuiState, SeparationController
 from SeparationWorker.history import HistoryStore, LibraryState, SplitLibraryController, TrackRecord
+from SeparationWorker.instance_lock import acquire_single_instance
 from SeparationWorker.mixer_controller import MixerController, MixerState
 
 
@@ -247,6 +248,8 @@ def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
         canvas.create_oval(size / 2 - 1.5, size * 0.68, size / 2 + 1.5, size * 0.68 + 3, fill=color, outline="", tags="icon")
     elif kind == "dot":
         canvas.create_oval(size * 0.35, size * 0.35, size * 0.65, size * 0.65, fill=color, outline="", tags="icon")
+    elif kind == "stop":
+        canvas.create_rectangle(size * 0.26, size * 0.26, size * 0.74, size * 0.74, fill=color, outline="", tags="icon")
     elif kind == "trash":
         lid_y = size * 0.3
         canvas.create_line(size * 0.2, lid_y, size * 0.8, lid_y, fill=color, width=2, tags="icon")
@@ -553,11 +556,16 @@ class StemslayerApp:
         )
         self.history_store = HistoryStore()
         self.history_store.recover_unfinished()
+        # Safe only because acquire_single_instance() in main() guarantees
+        # exactly one process reaches this code (ARC-01); a second process
+        # racing this cleanup could delete another job's in-progress copy.
+        self.history_store.purge_input_copies()
         self.library_controller = SplitLibraryController(
             self.history_store,
             dispatch=self._events.put,
             on_change=self._render_library,
             on_success=self._library_succeeded,
+            on_model_progress=self._model_download_progress,
         )
         self._render_state(self.controller.state)
         self._render_mixer_state(self.mixer_controller.state)
@@ -798,6 +806,12 @@ class StemslayerApp:
         copy.pack(side="left")
         ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=ui_font("display", bold=True), anchor="w").pack(fill="x")
         ctk.CTkLabel(copy, text="Stored locally. Drop an audio file anywhere here to add a song.", text_color=COLORS["muted"], font=ui_font("caption"), anchor="w").pack(fill="x", pady=(4, 0))
+        # SEC-01: shows first-use model download progress; empty otherwise.
+        self.library_model_status = tk.StringVar()
+        ctk.CTkLabel(
+            copy, textvariable=self.library_model_status, text_color=COLORS["muted"],
+            font=ui_font("label"), anchor="w",
+        ).pack(fill="x", pady=(2, 0))
         add_song = ctk.CTkFrame(header, fg_color=COLORS["accent"], corner_radius=8, height=36)
         add_song.pack_propagate(False)
         add_song.pack(side="right")
@@ -921,8 +935,9 @@ class StemslayerApp:
             # One grid per row: the title column is the only one with weight,
             # so it alone absorbs overflow from a long title. Artist, detail,
             # and the action buttons keep their width and stay aligned across
-            # rows instead of drifting with the title's length.
-            body.grid_columnconfigure(1, weight=1)
+            # rows instead of drifting with the title's length. Column 1 is
+            # the optional "Queued" cell; it stays empty on every other row.
+            body.grid_columnconfigure(2, weight=1)
             color = COLORS["success"] if record.status == "ready" else COLORS["error"] if record.status == "failed" else COLORS["accent"]
             # 10px, not 8: customtkinter's anti-aliased corner rounding reads
             # as a squared-off blob at very small sizes, and a size equal to
@@ -930,15 +945,22 @@ class StemslayerApp:
             dot = ctk.CTkFrame(body, width=10, height=10, corner_radius=5, fg_color=color)
             dot.pack_propagate(False)
             dot.grid(row=0, column=0, padx=(2, 12))
+            if record.track_id in state.queued_track_ids:
+                # Derived render-layer label only (D2/D4) -- no new
+                # tracks.status value or CHECK-constraint change; the row's
+                # persisted status stays "preparing" the whole time it queues.
+                ctk.CTkLabel(
+                    body, text="Queued", text_color=COLORS["accent"], font=ui_font("label", bold=True),
+                ).grid(row=0, column=1, padx=(0, 8))
             ctk.CTkLabel(
                 body, text=record.title, text_color=COLORS["text"],
                 font=ui_font("title", bold=True), anchor="w",
-            ).grid(row=0, column=1, sticky="ew")
+            ).grid(row=0, column=2, sticky="ew")
             artist = record.artist or "Unknown artist"
             ctk.CTkLabel(
                 body, text=artist, text_color=COLORS["muted"], font=ui_font("caption"),
                 anchor="w", width=170,
-            ).grid(row=0, column=2, sticky="w", padx=(16, 0))
+            ).grid(row=0, column=3, sticky="w", padx=(16, 0))
             detail = library_row_detail(
                 record,
                 profile_name=profile_names.get(record.profile_id, record.profile_id) if mixed_profiles else None,
@@ -946,28 +968,35 @@ class StemslayerApp:
             ctk.CTkLabel(
                 body, text=detail, text_color=COLORS["muted2"], font=ui_font("caption"),
                 anchor="w", width=190,
-            ).grid(row=0, column=3, sticky="w", padx=(16, 0))
+            ).grid(row=0, column=4, sticky="w", padx=(16, 0))
             if record.status == "ready":
                 open_button = self._library_action_button(
                     body, "play", lambda track_id=record.track_id: self._open_library_track(track_id), danger=False,
                 )
                 open_button.frame.library_action = "open"
                 open_button.frame.library_button = open_button
-                open_button.frame.grid(row=0, column=4, padx=(24, 0))
+                open_button.frame.grid(row=0, column=5, padx=(24, 0))
             elif record.status in {"failed", "interrupted", "unavailable"}:
                 retry_button = self._library_action_button(
                     body, "loop", lambda track_id=record.track_id: self.library_controller.retry(track_id), danger=False,
                 )
                 retry_button.frame.library_action = "retry"
                 retry_button.frame.library_button = retry_button
-                retry_button.frame.grid(row=0, column=4, padx=(24, 0))
+                retry_button.frame.grid(row=0, column=5, padx=(24, 0))
+            elif record.status in {"preparing", "processing"}:
+                cancel_button = self._library_action_button(
+                    body, "stop", lambda track_id=record.track_id: self._cancel_library_track(track_id), danger=True,
+                )
+                cancel_button.frame.library_action = "cancel"
+                cancel_button.frame.library_button = cancel_button
+                cancel_button.frame.grid(row=0, column=5, padx=(24, 0))
             remove_button = self._library_action_button(
                 body, "trash", lambda track_id=record.track_id: self._remove_library_track(track_id), danger=True,
             )
             remove_button.set_enabled(record.status not in {"preparing", "processing"})
             remove_button.frame.library_action = "remove"
             remove_button.frame.library_button = remove_button
-            remove_button.frame.grid(row=0, column=5, padx=(8, 0))
+            remove_button.frame.grid(row=0, column=6, padx=(8, 0))
             if record.error_detail:
                 ctk.CTkLabel(
                     row, text=record.error_detail, text_color=COLORS["muted"], font=ui_font("caption"),
@@ -1444,6 +1473,21 @@ class StemslayerApp:
 
     def _library_succeeded(self, record: TrackRecord) -> None:
         self._open_mixer_folder(record.result_directory, title=record.title)
+        self.library_model_status.set("")
+
+    def _model_download_progress(self, file_name: str, done: int, total: int) -> None:
+        """SEC-01: surface `model_manager.ensure_model()`'s first-use download.
+
+        Reached only through `SplitLibraryController._relay_model_progress`,
+        which already dispatches onto the GUI thread, so this runs safely.
+        """
+        if self._closed:
+            return
+        if total > 0:
+            percent = min(100, int(done * 100 / total))
+            self.library_model_status.set(f"Preparing {file_name}: {percent}%")
+        else:
+            self.library_model_status.set(f"Preparing {file_name}…")
 
     def _remove_library_track(self, track_id: str) -> None:
         def release(record: TrackRecord) -> None:
@@ -1458,6 +1502,17 @@ class StemslayerApp:
                 self.mixer_controller.unload()
 
         self.library_controller.remove(track_id, release=release)
+
+    def _cancel_library_track(self, track_id: str) -> None:
+        """Per-row Cancel action (D11): confirm once, then reach the owned
+        subprocess through SplitLibraryController.cancel -> JobManager.cancel."""
+        if not messagebox.askyesno(
+            "Cancel this separation?",
+            "This stops the job right now. The work in progress is lost and cannot be resumed.",
+            parent=self.root,
+        ):
+            return
+        self.library_controller.cancel(track_id)
 
     def _pick_stems_folder(self) -> None:
         selected = filedialog.askdirectory(parent=self.root, title="Choose a folder with published WAV stems")
@@ -1905,8 +1960,26 @@ class StemslayerApp:
     def _toggle_solo(self, stem_name: str) -> None:
         self.mixer_controller.toggle_solo(stem_name)
 
+    def _work_in_flight(self) -> bool:
+        """True while any library row is running or queued (D11's close gate).
+
+        Queued rows are still persisted as "preparing" (D2/D4's derived
+        label, not a new status), so this single status check covers both
+        a running job and every job waiting behind it.
+        """
+        return any(
+            record.status in {"preparing", "processing"} for record in self.library_controller.state.tracks
+        )
+
     def _close(self) -> None:
         if self._closed:
+            return
+        if self._work_in_flight() and not messagebox.askyesno(
+            "Stop separation work?",
+            "Closing now cancels the running and queued separation jobs. "
+            "This work is lost and cannot be resumed.",
+            parent=self.root,
+        ):
             return
         self._closed = True
         try:
@@ -1918,6 +1991,11 @@ class StemslayerApp:
         # a Windows cache-directory cleanup into a sharing violation.
         for directory in self._cache_directories:
             stem_cache.discard(directory)
+        # Drain (cancel the running job, cancel every queued job) before the
+        # window is destroyed (D10, D11): one shared bounded deadline, never
+        # raises. Worker threads are daemons, so a body that outlives the
+        # budget cannot keep the process alive past this call returning.
+        self.library_controller.shutdown(deadline=8.0)
         self.root.destroy()
 
     def _drain_events(self) -> None:
@@ -1939,12 +2017,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if arguments:
         raise ValueError(f"Unsupported arguments: {' '.join(arguments)}")
+    if not acquire_single_instance():
+        _report_second_instance()
+        return 1
     ctk.set_appearance_mode("dark")
     root = ctk.CTk()
     TkinterDnD.require(root)
     StemslayerApp(root)
     root.mainloop()
     return 0
+
+
+def _report_second_instance() -> None:
+    """Tell the user another instance is already running; touch no history state."""
+    message = "Stemslayer is already running. Close the other window first."
+    print(message, file=sys.stderr)
+    try:
+        dialog_root = tk.Tk()
+        dialog_root.withdraw()
+        messagebox.showerror("Stemslayer already running", message)
+        dialog_root.destroy()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

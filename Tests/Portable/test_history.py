@@ -1,16 +1,21 @@
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
 from SeparationWorker.engine.pcm import PlanarPCM
+from SeparationWorker.engine.publication import publish_atomic
 from SeparationWorker.engine.stem_profile import LEGACY_PROFILE, METAL_PROFILE
 from SeparationWorker.engine.stem_session import STEM_NAMES
 from SeparationWorker.engine.wav import encode_float32_wav
 from SeparationWorker.history import HistoryStore, SplitLibraryController, source_sha256
+from SeparationWorker.job_manager import JobCancelled, current_job
 
 
 class Queue:
@@ -103,6 +108,47 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertTrue(source.exists())
         self.assertFalse(record.result_directory.exists())
         self.assertIsNone(self.store.get(record.track_id))
+
+    def test_discard_input_copy_is_idempotent_when_no_copy_exists(self):
+        appdata = Path(self.temp.name) / "appdata"
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            self.store.discard_input_copy("missing-track")  # must not raise
+
+    def test_purge_input_copies_removes_orphans_but_keeps_active_jobs(self):
+        appdata = Path(self.temp.name) / "appdata"
+        active = self.store.create("active.wav", LEGACY_PROFILE)
+        self.store.update(active.track_id, status="processing")
+        orphan_a = appdata / "inputs" / "orphan-a"
+        orphan_b = appdata / "inputs" / "orphan-b"
+        active_dir = appdata / "inputs" / active.track_id
+        for directory in (orphan_a, orphan_b, active_dir):
+            directory.mkdir(parents=True)
+            (directory / "source.wav").write_bytes(b"data")
+
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            removed = self.store.purge_input_copies()
+
+        self.assertEqual(2, removed)
+        self.assertFalse(orphan_a.exists())
+        self.assertFalse(orphan_b.exists())
+        self.assertTrue(active_dir.exists())
+
+    def test_remove_also_discards_a_lingering_input_copy(self):
+        appdata = Path(self.temp.name) / "appdata"
+        source = Path(self.temp.name) / "source.wav"
+        source.write_bytes(b"original")
+        record = self.store.create(source, LEGACY_PROFILE)
+        record = self.store.update(record.track_id, status="ready")
+        record.result_directory.mkdir()
+        (record.result_directory / "stem.wav").write_bytes(b"stem")
+        copy_dir = appdata / "inputs" / record.track_id
+        copy_dir.mkdir(parents=True)
+        (copy_dir / "source.wav").write_bytes(b"stale copy")
+
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            self.assertTrue(self.store.remove(record.track_id))
+
+        self.assertFalse(copy_dir.exists())
 
     def test_remove_refuses_a_catalog_path_outside_the_managed_root(self):
         outside = Path(self.temp.name) / "outside"
@@ -494,6 +540,146 @@ class SplitLibraryControllerTests(unittest.TestCase):
         self.assertEqual("unavailable", unavailable.status)
         self.assertIn("Retry", unavailable.error_detail)
 
+    def test_mutating_the_source_after_add_cannot_change_the_hash_or_separation_input(self):
+        # ARC-02: the file is hashed and then mutated in the same window a
+        # real external edit could race the worker. The job's hash and
+        # separation input must both bind to the immutable copy, not to
+        # whatever `source` contains by the time `separate` runs.
+        source = self.source(content=b"original bytes")
+        digests_seen = []
+
+        def hash_and_mutate(path):
+            digest = source_sha256(path)
+            source.write_bytes(b"mutated bytes")
+            return digest
+
+        def separate(input_path, result, **_options):
+            digests_seen.append(source_sha256(input_path))
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            hash_source=hash_and_mutate,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        record = controller.add(source, LEGACY_PROFILE.profile_id)
+        self.queue.finish()
+
+        ready = self.store.get(record.track_id)
+        self.assertEqual("ready", ready.status)
+        self.assertEqual(1, len(digests_seen))
+        self.assertEqual(digests_seen[0], ready.source_hash)
+
+    def test_copy_is_created_before_hashing_and_used_for_hashing_and_separation(self):
+        source = self.source(content=b"payload")
+        appdata = Path(self.temp.name) / "appdata"
+        hashed_paths = []
+        separated_paths = []
+        separated_contents = []
+
+        def hash_source(path):
+            hashed_paths.append(Path(path))
+            return source_sha256(path)
+
+        def separate(input_path, result, **_options):
+            separated_paths.append(Path(input_path))
+            separated_contents.append(Path(input_path).read_bytes())
+            write_stems(Path(result))
+            return Path(result)
+
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            controller = SplitLibraryController(
+                self.store,
+                separate=separate,
+                metadata_reader=self.controller._metadata_reader,
+                hash_source=hash_source,
+                start_worker=self.queue.start,
+                dispatch=self.queue.dispatch,
+            )
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            expected_copy = appdata / "inputs" / record.track_id / "source.mp3"
+            self.queue.finish()
+
+        self.assertEqual([expected_copy], hashed_paths)
+        self.assertEqual([expected_copy], separated_paths)
+        self.assertEqual([b"payload"], separated_contents)
+
+    def test_input_copy_is_deleted_after_the_job_reaches_ready(self):
+        source = self.source()
+        appdata = Path(self.temp.name) / "appdata"
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = self.controller.add(source, LEGACY_PROFILE.profile_id)
+            copy_dir = appdata / "inputs" / record.track_id
+            copy_dir.mkdir(parents=True)
+            self.queue.finish()
+            ready = self.store.get(record.track_id)
+            self.assertEqual("ready", ready.status)
+            self.assertFalse(copy_dir.exists())
+
+    def test_input_copy_is_deleted_after_the_job_reaches_failed(self):
+        source = self.source()
+        appdata = Path(self.temp.name) / "appdata"
+
+        def separate(_input_path, _result, **_options):
+            raise RuntimeError("boom")
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            copy_dir = appdata / "inputs" / record.track_id
+            copy_dir.mkdir(parents=True)
+            self.queue.finish()
+            failed = self.store.get(record.track_id)
+            self.assertEqual("failed", failed.status)
+            self.assertFalse(copy_dir.exists())
+
+    def test_retry_recopies_the_input_after_deletion_and_succeeds(self):
+        source = self.source(content=b"retry me")
+        appdata = Path(self.temp.name) / "appdata"
+        attempts = []
+        staged_contents = []
+
+        def separate(input_path, result, **_options):
+            attempts.append(Path(input_path))
+            staged_contents.append(Path(input_path).read_bytes())
+            if len(attempts) == 1:
+                raise RuntimeError("first attempt fails")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            self.queue.finish()
+            self.assertEqual("failed", self.store.get(record.track_id).status)
+
+            self.assertTrue(controller.retry(record.track_id))
+            self.queue.finish()
+
+        expected_copy = appdata / "inputs" / record.track_id / "source.mp3"
+        retried = self.store.get(record.track_id)
+        self.assertEqual("ready", retried.status)
+        self.assertEqual([expected_copy, expected_copy], attempts)
+        self.assertEqual([b"retry me", b"retry me"], staged_contents)
+        self.assertTrue(source.exists())
+        self.assertFalse(expected_copy.parent.exists())
+
     def test_retry_replaces_an_invalid_managed_result_without_touching_the_source(self):
         source = self.source()
         record = self.store.create(source, LEGACY_PROFILE)
@@ -513,6 +699,243 @@ class SplitLibraryControllerTests(unittest.TestCase):
         self.assertEqual("ready", ready.status)
         self.assertFalse((ready.result_directory / "conflicting.txt").exists())
         self.assertTrue(source.exists())
+
+    def test_cancel_mid_run_lands_on_interrupted_with_no_partial_artifacts_and_retry_still_works(self):
+        source = self.source(content=b"cancel me")
+        appdata = Path(self.temp.name) / "appdata"
+        attempts = []
+
+        def separate(input_path, result, **_options):
+            attempts.append(Path(input_path))
+            if len(attempts) == 1:
+                raise JobCancelled("job cancelled mid separation")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        with mock.patch("SeparationWorker.history.local_data_root", return_value=appdata):
+            record = controller.add(source, LEGACY_PROFILE.profile_id)
+            copy_dir = appdata / "inputs" / record.track_id
+            copy_dir.mkdir(parents=True)
+            self.queue.finish()
+
+            interrupted = self.store.get(record.track_id)
+            self.assertEqual("interrupted", interrupted.status)
+            self.assertIn("job.cancelled", interrupted.error_detail)
+            self.assertFalse(copy_dir.exists())
+            self.assertFalse(interrupted.result_directory.exists())
+
+            self.assertTrue(controller.retry(record.track_id))
+            self.queue.finish()
+
+        retried = self.store.get(record.track_id)
+        self.assertEqual("ready", retried.status)
+        self.assertEqual(2, len(attempts))
+
+    def test_commit_if_active_blocks_the_commit_when_cancelled_just_before_publication(self):
+        source = self.source(content=b"race the commit")
+
+        def separate(input_path, result, *, cancellation=None, **_options):
+            def validate(_staging):
+                cancellation.cancel()
+
+            result = Path(result)
+            return publish_atomic(
+                result.parent,
+                result.name,
+                {"vocals.wav": b"vocals"},
+                cancellation=cancellation,
+                validate=validate,
+            )
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            start_worker=self.queue.start,
+            dispatch=self.queue.dispatch,
+        )
+        record = controller.add(source, LEGACY_PROFILE.profile_id)
+        self.queue.finish()
+
+        interrupted = self.store.get(record.track_id)
+        self.assertEqual("interrupted", interrupted.status)
+        self.assertIn("job.cancelled", interrupted.error_detail)
+        self.assertFalse(interrupted.result_directory.exists())
+
+    def test_shutdown_cancels_the_running_job_and_drains_three_queued_jobs_within_the_deadline(self):
+        entered = threading.Event()
+        release = threading.Event()
+        started_sources = []
+
+        def separate(input_path, result, *, cancellation=None, **_options):
+            started_sources.append(Path(input_path))
+            entered.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("timed out waiting to be released")
+            if cancellation is not None and cancellation.cancelled:
+                raise JobCancelled("job cancelled during shutdown drain")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+            # Real background threads (the default start_worker) are required
+            # here: one job must genuinely be running while shutdown() drains
+            # the rest concurrently.
+        )
+        running = controller.add(self.source("running"), LEGACY_PROFILE.profile_id)
+        self.assertTrue(entered.wait(timeout=5))
+        queued = [
+            controller.add(self.source(f"queued-{index}"), LEGACY_PROFILE.profile_id)
+            for index in range(3)
+        ]
+
+        # Let the running job's separate() finish shortly after shutdown
+        # starts waiting on it, so the bounded join succeeds well inside the
+        # deadline instead of exhausting it.
+        threading.Timer(0.2, release.set).start()
+        started_at = time.monotonic()
+        joined = controller.shutdown(deadline=3.0)
+        elapsed = time.monotonic() - started_at
+
+        self.assertTrue(joined)
+        self.assertLess(elapsed, 3.0)
+        self.assertEqual(1, len(started_sources))
+        interrupted_running = self.store.get(running.track_id)
+        self.assertEqual("interrupted", interrupted_running.status)
+        for record in queued:
+            self.assertEqual("interrupted", self.store.get(record.track_id).status)
+
+    def test_controller_propagates_queued_track_ids_in_fifo_order_as_the_running_job_drains(self):
+        # CRITICAL gap (verify-report): SplitLibraryController._queue_changed
+        # / LibraryState.queued_track_ids propagation had zero covering test
+        # above raw JobManager.on_queue_change. Real background threads (the
+        # default start_worker) are required: one job must genuinely run
+        # while three more sit behind it in the FIFO queue.
+        #
+        # Every staged input copy is renamed to "source<ext>" (ARC-02's
+        # immutable-copy staging), so jobs are distinguished by call order,
+        # not by the input path's name.
+        entered = [threading.Event() for _ in range(4)]
+        release = [threading.Event() for _ in range(4)]
+        started: list[int] = []
+
+        def separate(input_path, result, **_options):
+            index = len(started)
+            started.append(index)
+            entered[index].set()
+            self.assertTrue(release[index].wait(timeout=5))
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+        )
+
+        # Distinct content per source: identical bytes would hash to the same
+        # identity, and once a job actually reaches separation (unlike the
+        # shutdown-drain test, which cancels these before they ever run),
+        # claim_identity() would collapse later jobs into the first one's
+        # record instead of running each independently.
+        running = controller.add(self.source("running", content=b"running"), LEGACY_PROFILE.profile_id)
+        self.assertTrue(entered[0].wait(timeout=5))
+
+        queued = [
+            controller.add(
+                self.source(f"queued-{index}", content=f"queued-{index}".encode()),
+                LEGACY_PROFILE.profile_id,
+            )
+            for index in range(3)
+        ]
+        expected_fifo = tuple(record.track_id for record in queued)
+
+        # Submitting behind a full concurrency slot reports the new queue
+        # position immediately (D4) -- without this, the first entry queued
+        # behind a running job would show no "Queued" state at all until some
+        # other job's start/finish happened to move the queue.
+        self.assertEqual(expected_fifo, controller.state.queued_track_ids)
+
+        release[0].set()
+        self.assertTrue(entered[1].wait(timeout=5))
+        self.assertEqual(expected_fifo[1:], controller.state.queued_track_ids)
+
+        release[1].set()
+        self.assertTrue(entered[2].wait(timeout=5))
+        self.assertEqual(expected_fifo[2:], controller.state.queued_track_ids)
+
+        release[2].set()
+        self.assertTrue(entered[3].wait(timeout=5))
+        self.assertEqual((), controller.state.queued_track_ids)
+
+        release[3].set()
+        all_records = [running] + queued
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if all(self.store.get(record.track_id).status == "ready" for record in all_records):
+                break
+            time.sleep(0.02)
+        self.assertTrue(all(self.store.get(record.track_id).status == "ready" for record in all_records))
+        self.assertEqual((), controller.state.queued_track_ids)
+
+    def test_cancel_terminates_a_real_running_subprocess_end_to_end_and_lands_on_interrupted(self):
+        # WARNING gap (verify-report): SplitLibraryController.cancel(), the
+        # exact method wired to the GUI's per-row Cancel button, was never
+        # directly invoked by any test end-to-end. This proves the whole
+        # path (cancel() -> JobManager.cancel() -> a real owned subprocess
+        # actually killed) against a real `python -c "time.sleep(10)"` child,
+        # not a mock.
+        entered = threading.Event()
+        process_holder: dict = {}
+
+        def separate(input_path, result, *, cancellation=None, **_options):
+            handle = current_job()
+            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+            process_holder["process"] = process
+            handle.register(process)
+            entered.set()
+            try:
+                process.wait()
+            finally:
+                handle.unregister(process)
+            if cancellation is not None and cancellation.cancelled:
+                raise JobCancelled("job cancelled mid separation")
+            write_stems(Path(result))
+            return Path(result)
+
+        controller = SplitLibraryController(
+            self.store,
+            separate=separate,
+            metadata_reader=self.controller._metadata_reader,
+        )
+        record = controller.add(self.source("cancel-me"), LEGACY_PROFILE.profile_id)
+        self.assertTrue(entered.wait(timeout=5), "the job never started its real child process")
+
+        self.assertTrue(controller.cancel(record.track_id))
+
+        process = process_holder.get("process")
+        self.assertIsNotNone(process, "the job never registered its child process")
+        process.wait(timeout=10)
+        self.assertIsNotNone(process.poll(), "cancel() must actually terminate the real subprocess")
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self.store.get(record.track_id).status == "interrupted":
+                break
+            time.sleep(0.02)
+        interrupted = self.store.get(record.track_id)
+        self.assertEqual("interrupted", interrupted.status)
+        self.assertIn("job.cancelled", interrupted.error_detail)
 
 
 if __name__ == "__main__":

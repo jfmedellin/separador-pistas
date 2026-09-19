@@ -20,6 +20,7 @@ from typing import Callable, Mapping, Sequence
 
 from SeparationWorker.demucs_adapter import cuda_is_available
 from SeparationWorker.engine.publication import publish_atomic
+from SeparationWorker.job_manager import run_owned
 
 LEAD_STEM = "lead_guitar.wav"
 RHYTHM_STEM = "rhythm_guitar.wav"
@@ -174,7 +175,7 @@ def run_specialist(command: Sequence[str]) -> None:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         if creationflags:
             options["creationflags"] = creationflags
-    subprocess.run(list(command), **options)
+    run_owned(list(command), **options)
 
 
 def _command(
