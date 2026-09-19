@@ -44,6 +44,29 @@ COLORS = {
     "success": "#87A987",
 }
 
+FONT_FAMILY = "Segoe UI"
+MONO_FAMILY = "Consolas"
+# One scale for every view. Nothing renders below the label step: on a
+# 1080p+ desktop 9-10pt reads as fine print, which is what the old
+# per-widget sizes had drifted into.
+TYPE_SCALE = {
+    "label": 11,
+    "caption": 12,
+    "body": 12,
+    "title": 14,
+    "heading": 18,
+    "display": 22,
+}
+
+
+def ui_font(role: str, *, bold: bool = False, mono: bool = False) -> tuple:
+    family = MONO_FAMILY if mono else FONT_FAMILY
+    size = TYPE_SCALE[role]
+    if mono:
+        size -= 1
+    return (family, size, "bold") if bold else (family, size)
+
+
 # CTkFrame has no alpha channel, so a "tinted" circular button (a colour wash
 # over the window background, as in a web mockup) has to be a precomputed
 # solid hex: channel = window*(1-alpha) + tint*alpha, alpha 0.16 at rest and
@@ -575,7 +598,7 @@ class StemslayerApp:
         nav.grid_propagate(False)
         nav.grid_columnconfigure(2, weight=1)
 
-        ctk.CTkLabel(nav, text=APP_NAME.upper(), text_color=COLORS["text"], font=("Segoe UI", 14, "bold")).grid(
+        ctk.CTkLabel(nav, text=APP_NAME.upper(), text_color=COLORS["text"], font=ui_font("title", bold=True)).grid(
             row=0, column=0, padx=(32, 36)
         )
 
@@ -599,7 +622,7 @@ class StemslayerApp:
                 hover_color=COLORS["field"],
                 text_color=COLORS["muted2"],
                 text_color_disabled=COLORS["disabled"],
-                font=("Segoe UI", 11, "bold"),
+                font=ui_font("body", bold=True),
                 corner_radius=6,
                 height=NAV_HEIGHT - 20,
             )
@@ -630,16 +653,16 @@ class StemslayerApp:
         header = ctk.CTkFrame(center, fg_color=COLORS["window"], corner_radius=0)
         header.pack(fill="x")
         ctk.CTkLabel(
-            header, textvariable=self.hero_headline, text_color=COLORS["text"], font=("Segoe UI", 22, "bold")
+            header, textvariable=self.hero_headline, text_color=COLORS["text"], font=ui_font("display", bold=True)
         ).pack()
         ctk.CTkLabel(
             header,
             textvariable=self.hero_subtitle,
             text_color=COLORS["muted"],
-            font=("Segoe UI", 12),
+            font=ui_font("caption"),
         ).pack(pady=(6, 0))
 
-        ctk.CTkLabel(center, text="INPUT AUDIO", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w").pack(
+        ctk.CTkLabel(center, text="INPUT AUDIO", text_color=COLORS["muted"], font=ui_font("label", bold=True), anchor="w").pack(
             fill="x", pady=(28, 6)
         )
         dropzone = ctk.CTkFrame(center, fg_color=COLORS["surface_alt"], corner_radius=12, border_width=1, border_color=COLORS["line_strong"])
@@ -647,13 +670,13 @@ class StemslayerApp:
         dz_inner = ctk.CTkFrame(dropzone, fg_color="transparent")
         dz_inner.pack(pady=22)
         _icon(dz_inner, "audio", 26, COLORS["muted"], COLORS["surface_alt"]).pack()
-        self.input_value_label = ctk.CTkLabel(dz_inner, text="No file selected", text_color=COLORS["text"], font=("Segoe UI", 12, "bold"))
+        self.input_value_label = ctk.CTkLabel(dz_inner, text="No file selected", text_color=COLORS["text"], font=ui_font("title", bold=True))
         self.input_value_label.pack(pady=(10, 2))
         drop_hint = ctk.CTkLabel(
             dz_inner,
             text="Drag and drop an audio file, or click to browse",
             text_color=COLORS["muted2"],
-            font=("Segoe UI", 10),
+            font=ui_font("caption"),
         )
         drop_hint.pack()
         self.input_button = ctk.CTkButton(
@@ -666,14 +689,14 @@ class StemslayerApp:
             border_color=COLORS["line_strong"],
             text_color=COLORS["text"],
             corner_radius=8,
-            font=("Segoe UI", 11, "bold"),
+            font=ui_font("body", bold=True),
         )
         self.input_button.pack(pady=(12, 0))
         for widget in (dropzone, dz_inner):
             widget.bind("<Button-1>", lambda _event: self._pick_input())
         self._register_drop_zone(dropzone)
 
-        profile_label = ctk.CTkLabel(center, text="PROFILE", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w")
+        profile_label = ctk.CTkLabel(center, text="PROFILE", text_color=COLORS["muted"], font=ui_font("label", bold=True), anchor="w")
         profile_label.pack(
             fill="x", pady=(24, 6)
         )
@@ -694,11 +717,11 @@ class StemslayerApp:
             unselected_color=COLORS["field"],
             unselected_hover_color=COLORS["line"],
             text_color=COLORS["text"],
-            font=("Segoe UI", 10, "bold"),
+            font=ui_font("body", bold=True),
         )
         self.profile_selector.pack(fill="x")
 
-        channels_label = ctk.CTkLabel(center, text="CHANNELS TO EXTRACT", text_color=COLORS["muted"], font=("Segoe UI", 10, "bold"), anchor="w")
+        channels_label = ctk.CTkLabel(center, text="CHANNELS TO EXTRACT", text_color=COLORS["muted"], font=ui_font("label", bold=True), anchor="w")
         channels_label.pack(
             fill="x", pady=(18, 6)
         )
@@ -715,13 +738,13 @@ class StemslayerApp:
         status_copy = ctk.CTkFrame(banner_inner, fg_color="transparent")
         status_copy.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(
-            status_copy, textvariable=self.status_headline, text_color=COLORS["text"], font=("Segoe UI", 12, "bold"), anchor="w"
+            status_copy, textvariable=self.status_headline, text_color=COLORS["text"], font=ui_font("title", bold=True), anchor="w"
         ).pack(fill="x")
         ctk.CTkLabel(
             status_copy,
             textvariable=self.status_detail,
             text_color=COLORS["muted"],
-            font=("Segoe UI", 10),
+            font=ui_font("caption"),
             anchor="w",
             justify="left",
             wraplength=460,
@@ -738,7 +761,7 @@ class StemslayerApp:
             text_color=COLORS["accent_text"],
             text_color_disabled=COLORS["muted2"],
             corner_radius=8,
-            font=("Segoe UI", 12, "bold"),
+            font=ui_font("body", bold=True),
             height=40,
         )
         self.action.pack(side="right")
@@ -773,8 +796,8 @@ class StemslayerApp:
         header.pack(fill="x", padx=32, pady=(24, 18))
         copy = ctk.CTkFrame(header, fg_color="transparent")
         copy.pack(side="left")
-        ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=("Segoe UI", 22, "bold"), anchor="w").pack(fill="x")
-        ctk.CTkLabel(copy, text="Stored locally. Drop an audio file anywhere here to add a song.", text_color=COLORS["muted"], font=("Segoe UI", 12), anchor="w").pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=ui_font("display", bold=True), anchor="w").pack(fill="x")
+        ctk.CTkLabel(copy, text="Stored locally. Drop an audio file anywhere here to add a song.", text_color=COLORS["muted"], font=ui_font("caption"), anchor="w").pack(fill="x", pady=(4, 0))
         add_song = ctk.CTkFrame(header, fg_color=COLORS["accent"], corner_radius=8, height=36)
         add_song.pack_propagate(False)
         add_song.pack(side="right")
@@ -783,7 +806,7 @@ class StemslayerApp:
         add_song_icon = _icon(add_song_inner, "plus", 14, COLORS["accent_text"], COLORS["accent"])
         add_song_icon.pack(side="left", padx=(0, 6))
         add_song_label = ctk.CTkLabel(
-            add_song_inner, text="Add song", text_color=COLORS["accent_text"], font=("Segoe UI", 11, "bold"),
+            add_song_inner, text="Add song", text_color=COLORS["accent_text"], font=ui_font("body", bold=True),
         )
         add_song_label.pack(side="left")
         for widget in (add_song, add_song_inner, add_song_icon, add_song_label):
@@ -802,7 +825,7 @@ class StemslayerApp:
         _icon(search_row, "search", 16, COLORS["muted2"], COLORS["window"]).pack(side="left", padx=(0, 6))
         self.library_search = ctk.CTkEntry(
             search_row, placeholder_text="Search title or artist", width=240, height=30,
-            fg_color=COLORS["window"], border_width=0, text_color=COLORS["text"], font=("Segoe UI", 12),
+            fg_color=COLORS["window"], border_width=0, text_color=COLORS["text"], font=ui_font("body"),
         )
         self.library_search.pack(side="left")
         self.library_search.bind("<KeyRelease>", lambda _event: self._library_query())
@@ -812,7 +835,7 @@ class StemslayerApp:
             controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(),
             width=110, height=30, fg_color=COLORS["window"], button_color=COLORS["window"],
             button_hover_color=COLORS["field"], text_color=COLORS["muted"], dropdown_fg_color=COLORS["surface"],
-            font=("Segoe UI", 12), dropdown_font=("Segoe UI", 12),
+            font=ui_font("body"), dropdown_font=ui_font("body"),
         )
         self.library_sort.pack(side="right")
 
@@ -879,7 +902,7 @@ class StemslayerApp:
         if has_catalog and not state.tracks:
             ctk.CTkLabel(
                 self.library_rows, text="No songs match your search.",
-                text_color=COLORS["muted"], font=("Segoe UI", 12),
+                text_color=COLORS["muted"], font=ui_font("caption"),
             ).pack(pady=36)
             self._register_drop_zone(self.library_rows)
             return
@@ -909,11 +932,11 @@ class StemslayerApp:
             dot.grid(row=0, column=0, padx=(2, 12))
             ctk.CTkLabel(
                 body, text=record.title, text_color=COLORS["text"],
-                font=("Segoe UI", 14, "bold"), anchor="w",
+                font=ui_font("title", bold=True), anchor="w",
             ).grid(row=0, column=1, sticky="ew")
             artist = record.artist or "Unknown artist"
             ctk.CTkLabel(
-                body, text=artist, text_color=COLORS["muted"], font=("Segoe UI", 12),
+                body, text=artist, text_color=COLORS["muted"], font=ui_font("caption"),
                 anchor="w", width=170,
             ).grid(row=0, column=2, sticky="w", padx=(16, 0))
             detail = library_row_detail(
@@ -921,7 +944,7 @@ class StemslayerApp:
                 profile_name=profile_names.get(record.profile_id, record.profile_id) if mixed_profiles else None,
             )
             ctk.CTkLabel(
-                body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 12),
+                body, text=detail, text_color=COLORS["muted2"], font=ui_font("caption"),
                 anchor="w", width=190,
             ).grid(row=0, column=3, sticky="w", padx=(16, 0))
             if record.status == "ready":
@@ -947,7 +970,7 @@ class StemslayerApp:
             remove_button.frame.grid(row=0, column=5, padx=(8, 0))
             if record.error_detail:
                 ctk.CTkLabel(
-                    row, text=record.error_detail, text_color=COLORS["muted"], font=("Segoe UI", 11),
+                    row, text=record.error_detail, text_color=COLORS["muted"], font=ui_font("caption"),
                     anchor="w", justify="left", wraplength=720,
                 ).pack(fill="x", padx=4, pady=(0, 10))
             if index != last_index:
@@ -974,7 +997,6 @@ class StemslayerApp:
         for index in range(len(self._chip_lane_ids)):
             self._chips_frame.grid_columnconfigure(index, weight=0)
         lanes = profile.lanes
-        font_size = 10 if len(lanes) <= 4 else 9
         for index, lane in enumerate(lanes):
             self._chips_frame.grid_columnconfigure(index, weight=1)
             chip = ctk.CTkFrame(
@@ -990,7 +1012,7 @@ class StemslayerApp:
                 inner,
                 text=lane.display_name.upper(),
                 text_color=COLORS["text"],
-                font=("Segoe UI", font_size, "bold"),
+                font=ui_font("label", bold=True),
             ).pack(side="left")
         self._chip_lane_ids = profile.lane_ids
 
@@ -1033,13 +1055,13 @@ class StemslayerApp:
         title_box = ctk.CTkFrame(header, fg_color="transparent")
         title_box.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
-            title_box, textvariable=self.mixer_title, text_color=COLORS["text"], font=("Segoe UI", 18, "bold")
+            title_box, textvariable=self.mixer_title, text_color=COLORS["text"], font=ui_font("heading", bold=True)
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_box,
             textvariable=self.mixer_detail,
             text_color=COLORS["muted2"],
-            font=("Segoe UI", 10),
+            font=ui_font("caption"),
             anchor="w",
             justify="left",
             wraplength=680,
@@ -1083,7 +1105,7 @@ class StemslayerApp:
             border_color=COLORS["line_strong"],
             text_color=COLORS["text"],
             corner_radius=8,
-            font=("Segoe UI", 11, "bold"),
+            font=ui_font("body", bold=True),
         )
 
     def _flat_button(self, parent, icon: str, command, *, diameter: int, icon_size: int) -> _RoundButton:
@@ -1174,7 +1196,7 @@ class StemslayerApp:
         scrub.grid(row=1, column=0, sticky="ew", pady=(14, 0))
         scrub.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(
-            scrub, textvariable=self.mixer_position_time, text_color=COLORS["muted"], font=("Consolas", 10), width=46
+            scrub, textvariable=self.mixer_position_time, text_color=COLORS["muted"], font=ui_font("caption", mono=True), width=52
         ).grid(row=0, column=0, padx=(0, 12))
         self.timeline = tk.Canvas(scrub, height=22, bg=COLORS["window"], highlightthickness=0)
         self.timeline.grid(row=0, column=1, sticky="ew")
@@ -1183,11 +1205,11 @@ class StemslayerApp:
         self.timeline.bind("<ButtonRelease-1>", self._seek_release)
         self.timeline.bind("<Configure>", lambda _event: self._draw_timeline())
         ctk.CTkLabel(
-            scrub, textvariable=self.mixer_duration_time, text_color=COLORS["muted"], font=("Consolas", 10), width=46
+            scrub, textvariable=self.mixer_duration_time, text_color=COLORS["muted"], font=ui_font("caption", mono=True), width=52
         ).grid(row=0, column=2, padx=(12, 0))
 
         self.mixer_status = ctk.CTkLabel(
-            transport, textvariable=self.mixer_headline, text_color=COLORS["muted2"], font=("Segoe UI", 10), anchor="w"
+            transport, textvariable=self.mixer_headline, text_color=COLORS["muted2"], font=ui_font("caption"), anchor="w"
         )
         self.mixer_status.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
@@ -1232,7 +1254,7 @@ class StemslayerApp:
         lane.grid_columnconfigure(1, weight=1)
         lane.grid_rowconfigure(0, weight=1)
 
-        controls = ctk.CTkFrame(lane, width=250, fg_color=COLORS["surface"], corner_radius=0)
+        controls = ctk.CTkFrame(lane, width=270, fg_color=COLORS["surface"], corner_radius=0)
         controls.grid(row=0, column=0, padx=(4, 10), pady=LANE_INNER_PAD, sticky="nsw")
         controls.grid_propagate(False)
         # Spacer rows above and below centre the controls in the lane, so the
@@ -1255,7 +1277,7 @@ class StemslayerApp:
             head,
             text=label,
             text_color=COLORS["muted"] if absent else COLORS["text"],
-            font=("Segoe UI", 9 if absent else 11, "bold"),
+            font=ui_font("title", bold=True),
             anchor="w",
         ).grid(row=0, column=2, sticky="w")
         scale = ctk.CTkSlider(
@@ -1272,7 +1294,7 @@ class StemslayerApp:
         )
         scale.set(100)
         scale.grid(row=2, column=1, padx=(10, 6), sticky="w")
-        percent = ctk.CTkLabel(controls, text="100%", width=34, anchor="e", text_color=COLORS["muted"], font=("Consolas", 9))
+        percent = ctk.CTkLabel(controls, text="100%", width=40, anchor="e", text_color=COLORS["muted"], font=ui_font("caption", mono=True))
         percent.grid(row=2, column=2, sticky="w")
 
         canvas = tk.Canvas(lane, bg=COLORS["surface"], highlightthickness=0)
@@ -1297,14 +1319,14 @@ class StemslayerApp:
         return ctk.CTkButton(
             parent,
             text=text,
-            width=26,
-            height=22,
+            width=28,
+            height=24,
             corner_radius=6,
             fg_color=COLORS["field"],
             hover_color=COLORS["line"],
             text_color=COLORS["muted"],
             text_color_disabled=COLORS["disabled"],
-            font=("Segoe UI", 9, "bold"),
+            font=ui_font("body", bold=True),
             command=command,
         )
 
@@ -1362,7 +1384,6 @@ class StemslayerApp:
         dialog = ctk.CTkToplevel(self.root)
         self._profile_dialog = dialog
         dialog.title("Choose split profile")
-        dialog.geometry("460x360")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLORS["surface"])
         dialog.transient(self.root)
@@ -1371,11 +1392,11 @@ class StemslayerApp:
         body.pack(fill="both", expand=True, padx=22, pady=22)
         ctk.CTkLabel(
             body, text="Choose a split profile", text_color=COLORS["text"],
-            font=("Segoe UI", 17, "bold"), anchor="w",
+            font=ui_font("heading", bold=True), anchor="w",
         ).pack(fill="x")
         ctk.CTkLabel(
             body, text=Path(source_path).name, text_color=COLORS["muted"],
-            font=("Segoe UI", 10), anchor="w",
+            font=ui_font("caption"), anchor="w",
         ).pack(fill="x", pady=(4, 14))
         for profile in SeparationController.available_profiles():
             row = ctk.CTkFrame(body, fg_color=COLORS["field"], corner_radius=9)
@@ -1384,14 +1405,14 @@ class StemslayerApp:
             copy.pack(side="left", fill="x", expand=True, padx=12, pady=10)
             ctk.CTkLabel(
                 copy, text=profile.display_name, text_color=COLORS["text"],
-                font=("Segoe UI", 11, "bold"), anchor="w",
+                font=ui_font("title", bold=True), anchor="w",
             ).pack(fill="x")
             note = profile.note or f"{len(profile.lanes)} stems"
             if not profile.enabled:
                 probe = SeparationController(profile=profile)
                 note = probe.state.profile_remediation
             ctk.CTkLabel(
-                copy, text=note, text_color=COLORS["muted"], font=("Segoe UI", 9),
+                copy, text=note, text_color=COLORS["muted"], font=ui_font("caption"),
                 anchor="w", justify="left", wraplength=300,
             ).pack(fill="x", pady=(2, 0))
             ctk.CTkButton(
@@ -1401,6 +1422,10 @@ class StemslayerApp:
                 fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
                 text_color=COLORS["accent_text"], text_color_disabled=COLORS["disabled"],
             ).pack(side="right", padx=10)
+        # A fixed height clipped the last profile once its remediation note
+        # wrapped; let the packed rows decide and only pin the width.
+        dialog.update_idletasks()
+        dialog.geometry(f"480x{body.winfo_reqheight() + 44}")
 
     def _confirm_library_add(self, source_path: str, profile_id: str) -> None:
         if self._profile_dialog is not None:
@@ -1470,7 +1495,7 @@ class StemslayerApp:
 
         head_row = ctk.CTkFrame(body, fg_color="transparent")
         head_row.pack(fill="x")
-        ctk.CTkLabel(head_row, text="Export stems", text_color=COLORS["text"], font=("Segoe UI", 16, "bold"), anchor="w").pack(
+        ctk.CTkLabel(head_row, text="Export stems", text_color=COLORS["text"], font=ui_font("heading", bold=True), anchor="w").pack(
             side="left"
         )
         ctk.CTkButton(
@@ -1500,7 +1525,7 @@ class StemslayerApp:
             border_color=COLORS["line_strong"],
             text_color=COLORS["text"],
             corner_radius=6,
-            font=("Segoe UI", 11, "bold"),
+            font=ui_font("body", bold=True),
         )
         select_all.pack(anchor="w", pady=(18, 10))
 
@@ -1523,12 +1548,12 @@ class StemslayerApp:
                 border_color=COLORS["line_strong"],
                 text_color=COLORS["text"],
                 corner_radius=6,
-                font=("Segoe UI", 11),
+                font=ui_font("body"),
             )
             checkbox.pack(side="left")
             checkbox_widgets.append(checkbox)
 
-        message = ctk.CTkLabel(body, text="", text_color=COLORS["error"], font=("Segoe UI", 10), anchor="w", justify="left", wraplength=320)
+        message = ctk.CTkLabel(body, text="", text_color=COLORS["error"], font=ui_font("caption"), anchor="w", justify="left", wraplength=320)
         message.pack(fill="x", pady=(14, 0))
 
         results_frame = ctk.CTkFrame(body, fg_color="transparent")
@@ -1542,7 +1567,7 @@ class StemslayerApp:
             text_color=COLORS["accent_text"],
             text_color_disabled=COLORS["muted2"],
             corner_radius=10,
-            font=("Segoe UI", 12, "bold"),
+            font=ui_font("body", bold=True),
             height=42,
         )
         export_button.pack(fill="x", pady=(14, 0), side="bottom")
@@ -1595,7 +1620,7 @@ class StemslayerApp:
                 text = f"{display_name}: ✓ {path.name}"
             else:
                 text = f"{display_name}: ✗ {code}"
-            ctk.CTkLabel(results_frame, text=text, text_color=COLORS["text"], font=("Segoe UI", 10), anchor="w", justify="left").pack(
+            ctk.CTkLabel(results_frame, text=text, text_color=COLORS["text"], font=ui_font("caption"), anchor="w", justify="left").pack(
                 anchor="w", pady=1
             )
 

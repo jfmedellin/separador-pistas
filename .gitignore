@@ -35,3 +35,7 @@ models/
 
 # Local project brief (not required to run the application)
 Prompt Maestro - Limbus Split Pro.pdf
+
+# Local Claude Code tooling and SDD workflow state
+.claude/
+openspec/
