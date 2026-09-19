@@ -152,6 +152,11 @@ def parse_drop_paths(data: str, splitlist: Callable[[str], tuple[str, ...]]) -> 
         return ()
 
 
+def space_toggles_playback(view: str, can_play: bool) -> bool:
+    """Report whether a Space press should toggle Mixer transport."""
+    return view == "mixer" and can_play
+
+
 def format_time(seconds: float) -> str:
     """Format a timeline value without exposing audio implementation details."""
     seconds = max(0.0, float(seconds))
@@ -522,6 +527,11 @@ class StemslayerApp:
         self._render_state(self.controller.state)
         self._render_mixer_state(self.mixer_controller.state)
         self._show_view("separation")
+        # Bound once, app-wide: the guard (space_toggles_playback) does the
+        # scoping on every press, so this never needs bind/unbind lifecycle
+        # tied to view switches. `add="+"` appends rather than replacing, so
+        # a future Space consumer on another bindtag is not silently dropped.
+        self.root.bind_all("<space>", self._space_pressed, add="+")
         self.root.after(50, self._drain_events)
         threading.Thread(
             target=stem_cache.sweep_orphans, name="stemslayer-stem-cache-sweep", daemon=True
@@ -1856,6 +1866,25 @@ class StemslayerApp:
             self.mixer_controller.pause()
         else:
             self.mixer_controller.play()
+
+    def _space_pressed(self, _event: tk.Event) -> str | None:
+        """Toggle Mixer playback on Space, gated by `space_toggles_playback`.
+
+        Manual verification (no automated test instantiates real Tk widgets):
+        1. Launch the app and load a session so the Mixer Play button is
+           enabled, then press Space with focus anywhere on the Mixer screen
+           -> playback starts/pauses like clicking Play/Pause, and repeated
+           presses keep alternating with no stray scroll or second action.
+        2. Switch to the SPLIT tab and press Space -> Mixer playback state is
+           unchanged (typing a space into the library search field still
+           inserts a space normally).
+        3. Return to the Mixer screen with no session loaded (Play disabled)
+           and press Space -> nothing happens.
+        """
+        if not space_toggles_playback(self._view, self.mixer_controller.state.can_play):
+            return None
+        self._toggle_play()
+        return "break"
 
     def _volume_changed(self, stem_name: str, value: float | str) -> None:
         percent = float(value)
