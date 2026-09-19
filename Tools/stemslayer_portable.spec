@@ -39,6 +39,11 @@ hiddenimports = [
     "torch.nn.modules",
     "torch.utils",
     "demucs.separate",
+    # Demucs checkpoints pickle `numpy.core.multiarray.scalar`. Under numpy 2
+    # `numpy.core` is only a compatibility shim that nothing imports
+    # statically, so without this the frozen worker fails torch.load with
+    # "No module named 'numpy.core.multiarray'" on first separation.
+    "numpy.core.multiarray",
     "mutagen",
     "_soundfile_data",
     "_sounddevice_data",
