@@ -763,7 +763,7 @@ class StemslayerApp:
         copy = ctk.CTkFrame(header, fg_color="transparent")
         copy.pack(side="left")
         ctk.CTkLabel(copy, text="Your split library", text_color=COLORS["text"], font=("Segoe UI", 22, "bold"), anchor="w").pack(fill="x")
-        ctk.CTkLabel(copy, text="Stored locally. Open ready stems without separating again.", text_color=COLORS["muted"], font=("Segoe UI", 11), anchor="w").pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(copy, text="Stored locally. Drop an audio file anywhere here to add a song.", text_color=COLORS["muted"], font=("Segoe UI", 11), anchor="w").pack(fill="x", pady=(4, 0))
         add_song = ctk.CTkFrame(header, fg_color=COLORS["accent"], corner_radius=8, height=36)
         add_song.pack_propagate(False)
         add_song.pack(side="right")
@@ -811,6 +811,9 @@ class StemslayerApp:
         )
         self.library_rows.pack(fill="both", expand=True, padx=(32, 20), pady=(0, 20))
         self._autohide_scrollbar(self.library_rows)
+        # Once the catalog replaces the empty-state drop zone, the library
+        # itself has to accept files or drag-and-drop silently stops working.
+        self._register_drop_zone(panel)
 
     def _autohide_scrollbar(self, frame: ctk.CTkScrollableFrame) -> None:
         """Show the scrollbar only once its content actually overflows the view.
@@ -866,6 +869,7 @@ class StemslayerApp:
                 self.library_rows, text="No songs match your search.",
                 text_color=COLORS["muted"], font=("Segoe UI", 11),
             ).pack(pady=36)
+            self._register_drop_zone(self.library_rows)
             return
         profile_names = {profile.profile_id: profile.display_name for profile in SeparationController.available_profiles()}
         # The profile only earns a place in the row once it tells songs apart.
@@ -936,6 +940,7 @@ class StemslayerApp:
                 ).pack(fill="x", padx=4, pady=(0, 10))
             if index != last_index:
                 ctk.CTkFrame(self.library_rows, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x")
+        self._register_drop_zone(self.library_rows)
 
     def _validate_library(self) -> None:
         self.history_store.validate_ready()
@@ -985,9 +990,15 @@ class StemslayerApp:
             self.controller.set_profile(profile_id)
 
     def _register_drop_zone(self, widget: tk.Widget) -> None:
-        """Register the complete CTk widget tree so every visible drop-zone surface accepts files."""
-        widget.drop_target_register(DND_FILES)
-        widget.dnd_bind("<<Drop>>", self._drop_input)
+        """Register the complete CTk widget tree so every visible drop-zone surface accepts files.
+
+        Safe to call again on a tree that gained children: widgets already
+        registered are skipped, only the new ones are wired.
+        """
+        if not getattr(widget, "stemslayer_drop_registered", False):
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._drop_input)
+            widget.stemslayer_drop_registered = True
         for child in widget.winfo_children():
             self._register_drop_zone(child)
 

@@ -216,6 +216,56 @@ class ReadyRowOpenTests(LibraryRowFixture):
         self.assertEqual("unavailable", tracks[0].status)
 
 
+class LibraryDropTargetTests(LibraryRowFixture):
+    """Regression: once the catalog replaced the empty-state drop zone, no
+    library widget accepted DND_FILES, so dragging a song in did nothing."""
+
+    def has_drop_binding(self, widget):
+        # CTk widgets redirect .bind() to their inner canvas, so ask Tk about
+        # the frame itself -- that is the widget tkdnd delivers <<Drop>> to.
+        return bool(self.root.tk.call("bind", widget._w, "<<Drop>>"))
+
+    def test_library_panel_and_rendered_rows_accept_file_drops(self):
+        self.make_ready_track(title="Song", artist="Artist")
+        body = self.render_and_find_row()
+
+        self.assertTrue(self.has_drop_binding(self.app._library_panel))
+        self.assertTrue(self.has_drop_binding(self.app.library_rows))
+        self.assertTrue(self.has_drop_binding(body))
+        self.assertTrue(self.has_drop_binding(self.find_action_button(body, "open").frame))
+
+    def test_rows_rendered_later_are_registered_without_rebinding_the_panel(self):
+        self.make_ready_track(title="First", artist="Artist")
+        self.render_and_find_row()
+        panel_binding = self.root.tk.call("bind", self.app._library_panel._w, "<<Drop>>")
+
+        self.make_ready_track(title="Second", artist="Artist")
+        self.app._show_view("separation")
+        self.root.update_idletasks()
+        self.root.update()
+        rows = [row for row in self.app.library_rows.winfo_children() if row.winfo_children()]
+
+        self.assertEqual(2, len(rows))
+        for row in rows:
+            self.assertTrue(self.has_drop_binding(row.winfo_children()[0]))
+        self.assertEqual(panel_binding, self.root.tk.call("bind", self.app._library_panel._w, "<<Drop>>"))
+
+    def test_a_drop_on_the_library_routes_to_the_profile_dialog(self):
+        self.make_ready_track(title="Song", artist="Artist")
+        self.render_and_find_row()
+        chosen = []
+        original = self.app._choose_profile
+        self.app._choose_profile = chosen.append
+        self.addCleanup(setattr, self.app, "_choose_profile", original)
+
+        class Event:
+            data = "{C:/Music/new song.mp3}"
+
+        self.app._drop_input(Event())
+
+        self.assertEqual(["C:/Music/new song.mp3"], chosen)
+
+
 class ReadyRowRemoveTests(LibraryRowFixture):
     def test_clicking_remove_on_a_ready_row_deletes_the_managed_folder_but_keeps_the_source(self):
         record = self.make_ready_track(title="Song", artist="Artist")
