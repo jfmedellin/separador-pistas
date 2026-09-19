@@ -771,18 +771,21 @@ class SplitLibraryControllerTests(unittest.TestCase):
 
     def test_shutdown_cancels_the_running_job_and_drains_three_queued_jobs_within_the_deadline(self):
         entered = threading.Event()
-        release = threading.Event()
         started_sources = []
 
         def separate(input_path, result, *, cancellation=None, **_options):
             started_sources.append(Path(input_path))
             entered.set()
-            if not release.wait(timeout=5):
-                raise RuntimeError("timed out waiting to be released")
-            if cancellation is not None and cancellation.cancelled:
-                raise JobCancelled("job cancelled during shutdown drain")
-            write_stems(Path(result))
-            return Path(result)
+            # Unwind only once shutdown() has actually cancelled this job,
+            # the way a killed subprocess would. A fixed-delay release raced
+            # shutdown()'s queued-job retirement (three SQLite writes) on a
+            # slow CI runner and let the job finish "ready" instead.
+            deadline = time.monotonic() + 5
+            while not (cancellation is not None and cancellation.cancelled):
+                if time.monotonic() > deadline:
+                    raise RuntimeError("timed out waiting for shutdown() to cancel the running job")
+                time.sleep(0.01)
+            raise JobCancelled("job cancelled during shutdown drain")
 
         controller = SplitLibraryController(
             self.store,
@@ -799,10 +802,6 @@ class SplitLibraryControllerTests(unittest.TestCase):
             for index in range(3)
         ]
 
-        # Let the running job's separate() finish shortly after shutdown
-        # starts waiting on it, so the bounded join succeeds well inside the
-        # deadline instead of exhausting it.
-        threading.Timer(0.2, release.set).start()
         started_at = time.monotonic()
         joined = controller.shutdown(deadline=3.0)
         elapsed = time.monotonic() - started_at
