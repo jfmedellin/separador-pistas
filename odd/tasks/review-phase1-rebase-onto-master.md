@@ -26,7 +26,7 @@ only adds docs). Conflicts are confined to `SeparationWorker/gui.py` and
 - [x] T2 Confirm master did not already fix ARC-01/02/03/04, SEC-01 (grep evidence).
 - [x] T3 `git rebase origin/master`, resolve each conflicting commit.
 - [x] T4 Full suite green on the rebased branch; `compileall` clean.
-- [ ] T5 Manual smoke of the touched GUI surfaces (cancel button, queued label, single-instance).
+- [x] T5 Manual smoke of the touched GUI surfaces (cancel button, queued label, single-instance).
 - [ ] T6 Close Phase 1 SDD verify/archive; push branch and open PR.
 
 ## Evidence
@@ -47,6 +47,6 @@ only adds docs). Conflicts are confined to `SeparationWorker/gui.py` and
   JobManager worker thread and deadlocked in Variable.__del__. Fixed in the
   fixtures (`gc.collect()` after destroy) -- commit 67eef30. Latent on the
   pre-rebase branch (the noise), surfaced by master's new tests.
-- T5: pending -- needs a real window; not proven by the suite.
-- T6: pending -- push/PR is the user's call. Phase 1 SDD verify/archive still
+- T5: user-run smoke on the rebased branch (2026-09-19): model download progress, Queued label, mid-run Cancel, close-drain confirmation, second instance refused. Reported OK.
+- T6: branch pushed, PR #20 opened against master (2026-09-19). Phase 1 SDD verify/archive still
   open under openspec/changes/review-phase1-correctness-security.
