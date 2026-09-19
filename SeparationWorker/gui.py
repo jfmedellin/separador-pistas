@@ -213,12 +213,6 @@ def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
         canvas.create_rectangle(size * 0.28, lid_y, size * 0.72, size * 0.86, outline=color, width=2, tags="icon")
         canvas.create_line(size * 0.42, size * 0.42, size * 0.42, size * 0.74, fill=color, width=1.6, tags="icon")
         canvas.create_line(size * 0.58, size * 0.42, size * 0.58, size * 0.74, fill=color, width=1.6, tags="icon")
-    elif kind == "sliders":
-        knob_x = {0.3: 0.62, 0.5: 0.38, 0.7: 0.5}
-        for y in (0.3, 0.5, 0.7):
-            canvas.create_line(size * 0.16, size * y, size * 0.84, size * y, fill=color, width=2, tags="icon")
-        for y, x in knob_x.items():
-            canvas.create_oval(size * x - 3, size * y - 3, size * x + 3, size * y + 3, fill=color, outline="", tags="icon")
     elif kind == "search":
         canvas.create_oval(size * 0.14, size * 0.14, size * 0.62, size * 0.62, outline=color, width=2, tags="icon")
         canvas.create_line(size * 0.58, size * 0.58, size * 0.86, size * 0.86, fill=color, width=2, tags="icon")
@@ -786,35 +780,6 @@ class StemslayerApp:
         self.library_search.bind("<KeyRelease>", lambda _event: self._library_query())
         ctk.CTkFrame(search_box, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x", pady=(4, 0))
 
-        # "All profiles"/"All statuses" live behind one filter icon instead of
-        # two permanently-boxed dropdowns -- a real catalogue already has the
-        # search box, the sort control, and every row's own actions competing
-        # for attention, so a rarely-touched filter pair stays collapsed.
-        self._library_filters_open = False
-        filter_button = self._flat_button(controls, "sliders", self._toggle_library_filters, diameter=32, icon_size=18)
-        self._library_filter_button = filter_button
-        filter_button.frame.pack(side="left", padx=(14, 0))
-
-        popover = ctk.CTkFrame(
-            panel, fg_color=COLORS["surface"], border_width=1, border_color=COLORS["line"], corner_radius=8,
-        )
-        self._library_filter_popover = popover
-        popover_inner = ctk.CTkFrame(popover, fg_color="transparent")
-        popover_inner.pack(padx=12, pady=12)
-        profiles = ["All profiles"] + [profile.display_name for profile in SeparationController.available_profiles()]
-        self.library_profile_filter = ctk.CTkOptionMenu(
-            popover_inner, values=profiles, command=lambda _value: self._library_query(), width=160, height=30,
-            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
-        )
-        self.library_profile_filter.pack(pady=(0, 8))
-        self.library_status_filter = ctk.CTkOptionMenu(
-            popover_inner,
-            values=["All statuses", "Ready", "Processing", "Failed", "Interrupted", "Unavailable"],
-            command=lambda _value: self._library_query(), width=160, height=30,
-            fg_color=COLORS["window"], button_color=COLORS["field"], button_hover_color=COLORS["line"],
-        )
-        self.library_status_filter.pack()
-
         self.library_sort = ctk.CTkOptionMenu(
             controls, values=["Newest", "Title", "Duration"], command=lambda _value: self._library_query(),
             width=100, height=30, fg_color=COLORS["window"], button_color=COLORS["window"],
@@ -851,29 +816,14 @@ class StemslayerApp:
 
         canvas.configure(yscrollcommand=_on_scroll)
 
-    def _toggle_library_filters(self) -> None:
-        self._library_filters_open = not self._library_filters_open
-        if self._library_filters_open:
-            self._library_filter_popover.place(
-                in_=self._library_filter_button.frame, relx=0, rely=1.0, y=6, anchor="nw",
-            )
-            self._library_filter_popover.lift()
-        else:
-            self._library_filter_popover.place_forget()
-        self._library_filter_button.set_active(self._library_filters_open)
-
     def _library_query(self) -> None:
         if not hasattr(self, "library_controller"):
             return
-        profile_name = self.library_profile_filter.get()
-        profile_id = self._profile_choices.get(profile_name, "all")
-        status = self.library_status_filter.get().lower()
-        status = "all" if status == "all statuses" else status
         sort = {"Newest": "created_at", "Title": "title", "Duration": "duration"}.get(
             self.library_sort.get(), "created_at"
         )
         self.library_controller.set_query(
-            search=self.library_search.get(), profile_id=profile_id, status=status, sort_by=sort
+            search=self.library_search.get(), profile_id="all", status="all", sort_by=sort
         )
 
     def _render_library(self, state: LibraryState) -> None:
@@ -896,7 +846,7 @@ class StemslayerApp:
             child.destroy()
         if has_catalog and not state.tracks:
             ctk.CTkLabel(
-                self.library_rows, text="No songs match these filters.",
+                self.library_rows, text="No songs match your search.",
                 text_color=COLORS["muted"], font=("Segoe UI", 11),
             ).pack(pady=36)
             return
