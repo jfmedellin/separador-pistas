@@ -164,6 +164,23 @@ def format_time(seconds: float) -> str:
     return f"{int(minutes):02d}:{remainder:05.2f}"
 
 
+def library_row_detail(record: TrackRecord, *, profile_name: str | None = None) -> str:
+    """Compose a library row's detail column from values every record carries.
+
+    BPM, key, and genre are left out on purpose: the catalog never computes
+    the first two, and tags rarely carry the third, so printing them only
+    filled the row with dashes.
+    """
+    duration = format_time(record.duration_seconds).split(".")[0] if record.duration_seconds else "—"
+    try:
+        date = datetime.fromisoformat(record.created_at_utc.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+    except ValueError:
+        date = "—"
+    parts = [profile_name] if profile_name else []
+    parts.extend((duration, date))
+    return "  ·  ".join(parts)
+
+
 def _draw_icon(canvas: tk.Canvas, kind: str, size: int, color: str) -> None:
     """Draw a small stroke-based glyph on a bare canvas (no icon-font dependency)."""
     canvas.delete("icon")
@@ -851,6 +868,8 @@ class StemslayerApp:
             ).pack(pady=36)
             return
         profile_names = {profile.profile_id: profile.display_name for profile in SeparationController.available_profiles()}
+        # The profile only earns a place in the row once it tells songs apart.
+        mixed_profiles = len({record.profile_id for record in state.tracks}) > 1
         last_index = len(state.tracks) - 1
         for index, record in enumerate(state.tracks):
             # A flat divided list, not individual bordered cards -- the row
@@ -902,13 +921,12 @@ class StemslayerApp:
                 body, text=artist, text_color=COLORS["muted"], font=("Segoe UI", 10),
                 anchor="w", width=145,
             ).pack(side="left", padx=(8, 0))
-            detail = (
-                f"{profile_names.get(record.profile_id, record.profile_id)}  ·  "
-                f"{self._track_duration(record)}  ·  BPM {record.bpm or '—'}  ·  "
-                f"Key {record.musical_key or '—'}  ·  {record.genre or '—'}  ·  {self._local_date(record)}"
+            detail = library_row_detail(
+                record,
+                profile_name=profile_names.get(record.profile_id, record.profile_id) if mixed_profiles else None,
             )
             ctk.CTkLabel(
-                body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 9),
+                body, text=detail, text_color=COLORS["muted2"], font=("Segoe UI", 10),
                 anchor="w", width=235,
             ).pack(side="left", padx=(8, 0), fill="x", expand=True)
             if record.error_detail:
@@ -918,17 +936,6 @@ class StemslayerApp:
                 ).pack(fill="x", padx=4, pady=(0, 10))
             if index != last_index:
                 ctk.CTkFrame(self.library_rows, height=1, corner_radius=0, fg_color=COLORS["line"]).pack(fill="x")
-
-    @staticmethod
-    def _track_duration(record: TrackRecord) -> str:
-        return format_time(record.duration_seconds).split(".")[0] if record.duration_seconds else "—"
-
-    @staticmethod
-    def _local_date(record: TrackRecord) -> str:
-        try:
-            return datetime.fromisoformat(record.created_at_utc.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
-        except ValueError:
-            return "—"
 
     def _validate_library(self) -> None:
         self.history_store.validate_ready()
